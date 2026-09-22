@@ -1,24 +1,51 @@
 import { db } from '../db.js';
 import { logActivity } from './activity.js';
 
+function bumpVersion() {
+  const current = db.prepare('SELECT version FROM signage_state WHERE id = 1').get();
+  const nextVersion = (current?.version || 0) + 1;
+  const updatedAt = new Date().toISOString();
+  return { nextVersion, updatedAt };
+}
+
+function playlistItems(playlistId) {
+  return db
+    .prepare(
+      `SELECT pi.id AS item_id, pi.order_index, pi.duration_sec,
+              m.id AS media_id, m.filename, m.original_name, m.type, m.mime_type
+       FROM playlist_items pi
+       JOIN media m ON m.id = pi.media_id
+       WHERE pi.playlist_id = ?
+       ORDER BY pi.order_index ASC, pi.id ASC`
+    )
+    .all(playlistId)
+    .map((row) => ({
+      type: row.type,
+      url: `/uploads/${row.filename}`,
+      durationSec: Math.max(1, Number(row.duration_sec) || 10),
+      filename: row.original_name,
+      mediaId: row.media_id,
+    }));
+}
+
 export function publishMedia(mediaId, actor = 'Admin') {
   const media = db.prepare('SELECT * FROM media WHERE id = ?').get(mediaId);
   if (!media) {
     return { ok: false, error: 'Media not found' };
   }
 
-  const current = db.prepare('SELECT version FROM signage_state WHERE id = 1').get();
-  const nextVersion = (current?.version || 0) + 1;
-  const updatedAt = new Date().toISOString();
+  const { nextVersion, updatedAt } = bumpVersion();
 
   db.prepare(
-    `UPDATE signage_state SET version = ?, media_id = ?, updated_at = ? WHERE id = 1`
+    `UPDATE signage_state
+     SET version = ?, media_id = ?, playlist_id = NULL, published_type = 'single', updated_at = ?
+     WHERE id = 1`
   ).run(nextVersion, mediaId, updatedAt);
 
   db.prepare(
     `INSERT INTO settings (key, value) VALUES ('last_resolved_media_id', ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-  ).run(String(mediaId));
+  ).run(`m:${mediaId}`);
 
   logActivity('publish', `${actor} published: ${media.original_name}`, {
     mediaId,
@@ -30,6 +57,44 @@ export function publishMedia(mediaId, actor = 'Admin') {
     version: nextVersion,
     updatedAt,
     media,
+  };
+}
+
+export function publishPlaylist(playlistId, actor = 'Admin') {
+  const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(playlistId);
+  if (!playlist) {
+    return { ok: false, error: 'Playlist not found' };
+  }
+  const items = playlistItems(playlistId);
+  if (!items.length) {
+    return { ok: false, error: 'Playlist has no items' };
+  }
+
+  const { nextVersion, updatedAt } = bumpVersion();
+
+  db.prepare(
+    `UPDATE signage_state
+     SET version = ?, media_id = NULL, playlist_id = ?, published_type = 'playlist', updated_at = ?
+     WHERE id = 1`
+  ).run(nextVersion, playlistId, updatedAt);
+
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES ('last_resolved_media_id', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(`p:${playlistId}`);
+
+  logActivity('publish', `${actor} published playlist: ${playlist.name}`, {
+    playlistId,
+    version: nextVersion,
+    itemCount: items.length,
+  });
+
+  return {
+    ok: true,
+    version: nextVersion,
+    updatedAt,
+    playlist,
+    items,
   };
 }
 
@@ -45,6 +110,48 @@ export function setDefaultMedia(mediaId) {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(String(mediaId));
   return { ok: true, media };
+}
+
+function asSingle(content) {
+  return {
+    mode: 'single',
+    version: content.version,
+    type: content.type,
+    url: content.url,
+    durationSec: null,
+    updatedAt: content.updatedAt,
+    filename: content.filename,
+    mediaId: content.mediaId,
+    playlistId: null,
+    items: content.url
+      ? [
+          {
+            type: content.type,
+            url: content.url,
+            durationSec: null,
+            filename: content.filename,
+          },
+        ]
+      : [],
+    source: content.source,
+    scheduleId: content.scheduleId,
+  };
+}
+
+function asPlaylist(version, updatedAt, playlistId, items, source = 'published') {
+  return {
+    mode: 'playlist',
+    version,
+    type: items[0]?.type || null,
+    url: items[0]?.url || null,
+    durationSec: items[0]?.durationSec ?? null,
+    updatedAt,
+    filename: items[0]?.filename || null,
+    mediaId: items[0]?.mediaId || null,
+    playlistId,
+    items,
+    source,
+  };
 }
 
 export function resolveCurrentContent() {
@@ -65,21 +172,23 @@ export function resolveCurrentContent() {
 
   if (scheduled) {
     const state = db.prepare('SELECT version, updated_at FROM signage_state WHERE id = 1').get();
-    return finalizeResolved({
-      version: state.version,
-      type: scheduled.type,
-      url: `/uploads/${scheduled.filename}`,
-      updatedAt: state.updated_at,
-      filename: scheduled.original_name,
-      mediaId: scheduled.media_id,
-      source: 'schedule',
-      scheduleId: scheduled.id,
-    });
+    return finalizeResolved(
+      asSingle({
+        version: state.version,
+        type: scheduled.type,
+        url: `/uploads/${scheduled.filename}`,
+        updatedAt: state.updated_at,
+        filename: scheduled.original_name,
+        mediaId: scheduled.media_id,
+        source: 'schedule',
+        scheduleId: scheduled.id,
+      })
+    );
   }
 
   const state = db
     .prepare(
-      `SELECT ss.version, ss.updated_at, ss.media_id,
+      `SELECT ss.version, ss.updated_at, ss.media_id, ss.playlist_id, ss.published_type,
               m.filename, m.original_name, m.mime_type, m.type
        FROM signage_state ss
        LEFT JOIN media m ON m.id = ss.media_id
@@ -87,16 +196,27 @@ export function resolveCurrentContent() {
     )
     .get();
 
+  if (state?.published_type === 'playlist' && state.playlist_id) {
+    const items = playlistItems(state.playlist_id);
+    if (items.length) {
+      return finalizeResolved(
+        asPlaylist(state.version, state.updated_at, state.playlist_id, items, 'published')
+      );
+    }
+  }
+
   if (state?.media_id && state.filename) {
-    return finalizeResolved({
-      version: state.version,
-      type: state.type,
-      url: `/uploads/${state.filename}`,
-      updatedAt: state.updated_at,
-      filename: state.original_name,
-      mediaId: state.media_id,
-      source: 'published',
-    });
+    return finalizeResolved(
+      asSingle({
+        version: state.version,
+        type: state.type,
+        url: `/uploads/${state.filename}`,
+        updatedAt: state.updated_at,
+        filename: state.original_name,
+        mediaId: state.media_id,
+        source: 'published',
+      })
+    );
   }
 
   const defaultSetting = db
@@ -111,32 +231,46 @@ export function resolveCurrentContent() {
   }
 
   if (defaultMedia) {
-    return finalizeResolved({
-      version: state?.version || 0,
-      type: defaultMedia.type,
-      url: `/uploads/${defaultMedia.filename}`,
-      updatedAt: state?.updated_at || null,
-      filename: defaultMedia.original_name,
-      mediaId: defaultMedia.id,
-      source: 'default',
-    });
+    return finalizeResolved(
+      asSingle({
+        version: state?.version || 0,
+        type: defaultMedia.type,
+        url: `/uploads/${defaultMedia.filename}`,
+        updatedAt: state?.updated_at || null,
+        filename: defaultMedia.original_name,
+        mediaId: defaultMedia.id,
+        source: 'default',
+      })
+    );
   }
 
-  return finalizeResolved({
-    version: state?.version || 0,
-    type: null,
-    url: null,
-    updatedAt: state?.updated_at || null,
-    filename: null,
-    mediaId: null,
-    source: 'none',
-  });
+  return finalizeResolved(
+    asSingle({
+      version: state?.version || 0,
+      type: null,
+      url: null,
+      updatedAt: state?.updated_at || null,
+      filename: null,
+      mediaId: null,
+      source: 'none',
+    })
+  );
+}
+
+function contentFingerprint(content) {
+  if (content.mode === 'playlist' && content.playlistId) {
+    return `p:${content.playlistId}`;
+  }
+  if (content.mediaId != null) {
+    return `m:${content.mediaId}`;
+  }
+  return '';
 }
 
 function finalizeResolved(content) {
   const prev = db.prepare(`SELECT value FROM settings WHERE key = 'last_resolved_media_id'`).get();
   const prevId = prev?.value ?? '';
-  const nextId = content.mediaId != null ? String(content.mediaId) : '';
+  const nextId = contentFingerprint(content);
   if (prevId !== nextId) {
     const current = db.prepare('SELECT version FROM signage_state WHERE id = 1').get();
     const nextVersion = (current?.version || 0) + 1;
@@ -160,12 +294,12 @@ function finalizeResolved(content) {
 }
 
 export function bumpVersionForScheduleChange() {
-  const current = db.prepare('SELECT version FROM signage_state WHERE id = 1').get();
-  const nextVersion = (current?.version || 0) + 1;
-  const updatedAt = new Date().toISOString();
+  const { nextVersion, updatedAt } = bumpVersion();
   db.prepare(`UPDATE signage_state SET version = ?, updated_at = ? WHERE id = 1`).run(
     nextVersion,
     updatedAt
   );
   return { version: nextVersion, updatedAt };
 }
+
+export { playlistItems };

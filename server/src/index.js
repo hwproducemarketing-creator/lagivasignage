@@ -15,6 +15,7 @@ import promotionsRoutes from './routes/promotions.js';
 import schedulesRoutes from './routes/schedules.js';
 import settingsRoutes from './routes/settings.js';
 import activityRoutes from './routes/activity.js';
+import playlistsRoutes from './routes/playlists.js';
 
 const require = createRequire(import.meta.url);
 const SqliteStoreFactory = require('better-sqlite3-session-store');
@@ -77,6 +78,7 @@ app.use('/api/promotions', promotionsRoutes);
 app.use('/api/schedules', schedulesRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/playlists', playlistsRoutes);
 
 // Web signage player (Vega OS / Fire TV browser / any TV browser)
 const playerDir = path.join(rootDir, 'public', 'player');

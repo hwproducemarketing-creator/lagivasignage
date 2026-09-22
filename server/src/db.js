@@ -66,6 +66,23 @@ export function initDatabase() {
       FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS playlists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS playlist_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      playlist_id INTEGER NOT NULL,
+      media_id INTEGER NOT NULL,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      duration_sec INTEGER NOT NULL DEFAULT 10,
+      FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+      FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS promotions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_name TEXT NOT NULL,
@@ -124,10 +141,20 @@ export function initDatabase() {
       );`);
   }
 
+  // Add playlist columns to signage_state if missing
+  const stateCols = db.prepare(`PRAGMA table_info(signage_state)`).all();
+  if (!stateCols.some((c) => c.name === 'published_type')) {
+    db.exec(`ALTER TABLE signage_state ADD COLUMN published_type TEXT NOT NULL DEFAULT 'single'`);
+  }
+  if (!stateCols.some((c) => c.name === 'playlist_id')) {
+    db.exec(`ALTER TABLE signage_state ADD COLUMN playlist_id INTEGER`);
+  }
+
   const state = db.prepare('SELECT id FROM signage_state WHERE id = 1').get();
   if (!state) {
     db.prepare(
-      `INSERT INTO signage_state (id, version, media_id, updated_at) VALUES (1, 0, NULL, NULL)`
+      `INSERT INTO signage_state (id, version, media_id, playlist_id, published_type, updated_at)
+       VALUES (1, 0, NULL, NULL, 'single', NULL)`
     ).run();
   }
 

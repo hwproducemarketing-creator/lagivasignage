@@ -1,9 +1,11 @@
 (() => {
-  const APP_VERSION = '1.0.2-web';
+  const APP_VERSION = '1.1.0-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const CACHE_NAME = 'hw-signage-media-v1';
+  const DEFAULT_IMAGE_SEC = 10;
+  const DEFAULT_VIDEO_SEC = 30;
 
   const imageView = document.getElementById('imageView');
   const videoView = document.getElementById('videoView');
@@ -50,6 +52,10 @@
   let wakeLock = null;
   let tapCount = 0;
   let tapTimer = null;
+  let playlistItems = [];
+  let playlistIndex = 0;
+  let playMode = 'single';
+  let slideTimer = null;
 
   function setVisible(el, visible) {
     if (!el) return;
@@ -296,49 +302,126 @@
     }
   }
 
+  function stopSlideTimer() {
+    if (slideTimer) {
+      clearTimeout(slideTimer);
+      slideTimer = null;
+    }
+  }
+
+  function itemDuration(item) {
+    if (item.durationSec != null && Number(item.durationSec) > 0) {
+      return Number(item.durationSec) * 1000;
+    }
+    return (item.type === 'video' ? DEFAULT_VIDEO_SEC : DEFAULT_IMAGE_SEC) * 1000;
+  }
+
+  async function showPlaylistItem(index) {
+    if (!playlistItems.length) return;
+    playlistIndex = ((index % playlistItems.length) + playlistItems.length) % playlistItems.length;
+    const item = playlistItems[playlistIndex];
+    const absoluteUrl = new URL(item.url, location.origin).href;
+
+    try {
+      const res = await fetch(absoluteUrl);
+      if (!res.ok) throw new Error(`download HTTP ${res.status}`);
+      const blob = await res.blob();
+      if (!blob || blob.size <= 0) throw new Error('empty download');
+      const objectUrl = URL.createObjectURL(blob);
+      displayMedia(objectUrl, item.type);
+      try {
+        await cachePut(`${contentVersion}-${playlistIndex}`, item.type, blob);
+      } catch (err) {
+        noteError(err, 'cachePut');
+      }
+    } catch (err) {
+      noteError(err, 'playlist-item');
+      displayMedia(absoluteUrl, item.type);
+    }
+
+    updateChrome();
+
+    const shouldRotate = playMode === 'playlist' || playlistItems.length > 1;
+    if (!shouldRotate) {
+      // Classic single publish: hold until version changes
+      stopSlideTimer();
+      videoView.onended = null;
+      return;
+    }
+
+    stopSlideTimer();
+    const ms = itemDuration(item);
+    if (item.type === 'video') {
+      videoView.onended = () => {
+        videoView.onended = null;
+        // If video ends before duration, wait remaining or advance
+        stopSlideTimer();
+        showPlaylistItem(playlistIndex + 1);
+      };
+    } else {
+      videoView.onended = null;
+    }
+    slideTimer = setTimeout(() => {
+      videoView.onended = null;
+      showPlaylistItem(playlistIndex + 1);
+    }, ms);
+  }
+
+  function applyCurrentPayload(current) {
+    const items =
+      Array.isArray(current.items) && current.items.length
+        ? current.items
+        : current.url
+          ? [
+              {
+                type: current.type,
+                url: current.url,
+                durationSec: current.durationSec ?? null,
+                filename: current.filename,
+              },
+            ]
+          : [];
+
+    if (!items.length) {
+      stopSlideTimer();
+      playlistItems = [];
+      if (!mediaIsVisible()) showWaiting('Waiting for signage…');
+      updateChrome();
+      return;
+    }
+
+    playMode = current.mode === 'playlist' || items.length > 1 ? 'playlist' : 'single';
+    playlistItems = items;
+    playlistIndex = 0;
+    contentVersion = current.version;
+    store.set('contentVersion', String(contentVersion));
+    store.set('lastUpdate', new Date().toISOString());
+    showPlaylistItem(0);
+  }
+
   async function pollOnce() {
     try {
       const current = await jsonFetch('/api/screen/current');
       networkOk = true;
-      if (!current.url || !current.type) {
+
+      const hasContent =
+        (Array.isArray(current.items) && current.items.length > 0) ||
+        (current.url && current.type);
+
+      if (!hasContent) {
+        stopSlideTimer();
         if (!mediaIsVisible()) showWaiting('Waiting for signage…');
         updateChrome();
         return;
       }
 
       const sameVersion = current.version === contentVersion;
-      if (sameVersion && mediaIsVisible()) {
+      if (sameVersion && mediaIsVisible() && playlistItems.length) {
         updateChrome();
         return;
       }
 
-      const absoluteUrl = new URL(current.url, location.origin).href;
-
-      try {
-        const res = await fetch(absoluteUrl);
-        if (!res.ok) throw new Error(`download HTTP ${res.status}`);
-        const blob = await res.blob();
-        if (!blob || blob.size <= 0) throw new Error('empty download');
-
-        const objectUrl = URL.createObjectURL(blob);
-        displayMedia(objectUrl, current.type);
-
-        contentVersion = current.version;
-        store.set('contentVersion', String(contentVersion));
-        store.set('lastUpdate', new Date().toISOString());
-
-        try {
-          await cachePut(current.version, current.type, blob);
-        } catch (err) {
-          noteError(err, 'cachePut');
-        }
-      } catch (dlErr) {
-        noteError(dlErr, 'download');
-        displayMedia(absoluteUrl, current.type);
-        contentVersion = current.version;
-        store.set('contentVersion', String(contentVersion));
-        store.set('lastUpdate', new Date().toISOString());
-      }
+      applyCurrentPayload(current);
       updateChrome();
     } catch (err) {
       networkOk = false;
@@ -383,6 +466,7 @@
     if (pollTimer) clearInterval(pollTimer);
     if (hbTimer) clearInterval(hbTimer);
     if (pairTimer) clearInterval(pairTimer);
+    stopSlideTimer();
     pollTimer = hbTimer = pairTimer = null;
   }
 
@@ -434,6 +518,7 @@
       `App version: ${APP_VERSION}`,
       `Server: ${location.origin}`,
       `Signage version: ${contentVersion}`,
+      `Mode: ${playMode} (${playlistItems.length} item(s), index ${playlistIndex})`,
       `Showing media: ${mediaIsVisible()}`,
       `Cached type: ${cachedType || '—'}`,
       `Last update: ${store.get('lastUpdate') || '—'}`,

@@ -11,12 +11,16 @@ router.get('/current', (_req, res) => {
   const content = resolveCurrentContent();
   res.json({
     version: content.version,
+    mode: content.mode || 'single',
     type: content.type,
     url: content.url,
     imageUrl: content.type === 'image' ? content.url : null,
+    durationSec: content.durationSec ?? null,
     updatedAt: content.updatedAt,
     filename: content.filename,
     source: content.source,
+    playlistId: content.playlistId || null,
+    items: content.items || [],
   });
 });
 

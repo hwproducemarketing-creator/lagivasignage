@@ -7,6 +7,7 @@ import ContentPage from './pages/ContentPage';
 import ScreensPage from './pages/ScreensPage';
 import PromotionsPage from './pages/PromotionsPage';
 import SettingsPage from './pages/SettingsPage';
+import PlaylistsPage from './pages/PlaylistsPage';
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="content" element={<ContentPage />} />
         <Route path="screens" element={<ScreensPage />} />
         <Route path="promotions" element={<PromotionsPage />} />
+        <Route path="playlists" element={<PlaylistsPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -70,6 +70,14 @@ export const api = {
   updateSettings: (body) =>
     request('/api/settings', { method: 'PUT', body: JSON.stringify(body) }),
   activity: () => request('/api/activity'),
+  playlists: () => request('/api/playlists'),
+  createPlaylist: (body) =>
+    request('/api/playlists', { method: 'POST', body: JSON.stringify(body) }),
+  updatePlaylist: (id, body) =>
+    request(`/api/playlists/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deletePlaylist: (id) => request(`/api/playlists/${id}`, { method: 'DELETE' }),
+  publishPlaylist: (playlistId) =>
+    request(`/api/playlists/${playlistId}/publish`, { method: 'POST', body: '{}' }),
 };
 
 export function mediaUrl(url) {
