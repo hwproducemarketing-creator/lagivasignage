@@ -91,7 +91,7 @@ export default function SettingsPage() {
             value={
               typeof window !== 'undefined' && !window.location.origin.includes('5173')
                 ? window.location.origin
-                : 'http://YOUR_LAN_IP:4000 or https://lagivasignage-production.up.railway.app'
+                : 'http://YOUR_LAN_IP:4000 or https://heroic-acceptance-production-433e.up.railway.app'
             }
             readOnly
           />
@@ -102,14 +102,14 @@ export default function SettingsPage() {
               href={
                 typeof window !== 'undefined' && !window.location.origin.includes('5173')
                   ? `${window.location.origin}/player`
-                  : 'https://lagivasignage-production.up.railway.app/player'
+                  : 'https://heroic-acceptance-production-433e.up.railway.app/player'
               }
               target="_blank"
               rel="noreferrer"
             >
               {typeof window !== 'undefined' && !window.location.origin.includes('5173')
                 ? `${window.location.origin}/player`
-                : 'https://lagivasignage-production.up.railway.app/player'}
+                : 'https://heroic-acceptance-production-433e.up.railway.app/player'}
             </a>
           </p>
         </div>

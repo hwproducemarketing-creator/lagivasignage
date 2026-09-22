@@ -1,7 +1,7 @@
 # Deploy checklist for Railway + Fire TV (store)
 
 Production URL:
-https://lagivasignage-production.up.railway.app
+https://heroic-acceptance-production-433e.up.railway.app
 
 ## A. Railway settings
 
@@ -12,9 +12,9 @@ https://lagivasignage-production.up.railway.app
    - SESSION_SECRET=...
    - ADMIN_USERNAME=admin
    - ADMIN_PASSWORD=...
-   - CORS_ORIGIN=https://lagivasignage-production.up.railway.app
-3. Admin: https://lagivasignage-production.up.railway.app
-4. Health: https://lagivasignage-production.up.railway.app/api/health
+   - CORS_ORIGIN=https://heroic-acceptance-production-433e.up.railway.app
+3. Admin: https://heroic-acceptance-production-433e.up.railway.app
+4. Health: https://heroic-acceptance-production-433e.up.railway.app/api/health
 
 ## B. TV display options
 
@@ -22,7 +22,7 @@ https://lagivasignage-production.up.railway.app
 
 Open on the TV browser (or bookmark / home screen shortcut):
 
-**https://lagivasignage-production.up.railway.app/player**
+**https://heroic-acceptance-production-433e.up.railway.app/player**
 
 1. TV shows a device code (`XXXX-XXXX`)
 2. Phone admin → Screens → Add Screen → enter code
@@ -36,7 +36,7 @@ Works with store Wi‑Fi. No APK required.
 `firetv/local.properties`:
 
 ```properties
-SERVER_URL=https://lagivasignage-production.up.railway.app
+SERVER_URL=https://heroic-acceptance-production-433e.up.railway.app
 ```
 
 1. Open `firetv/` in Android Studio
@@ -46,5 +46,5 @@ SERVER_URL=https://lagivasignage-production.up.railway.app
 
 ## C. Day-to-day
 
-Phone → https://lagivasignage-production.up.railway.app → upload/publish  
+Phone → https://heroic-acceptance-production-433e.up.railway.app → upload/publish  
 No laptop required.

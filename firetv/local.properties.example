@@ -2,7 +2,7 @@
 #
 # Production (Railway):
 sdk.dir=C:\\Users\\MOKSH\\AppData\\Local\\Android\\Sdk
-SERVER_URL=https://lagivasignage-production.up.railway.app
+SERVER_URL=https://heroic-acceptance-production-433e.up.railway.app
 #
 # Local Wi‑Fi test only (optional):
 # SERVER_URL=http://192.168.1.50:4000

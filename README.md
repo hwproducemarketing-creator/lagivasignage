@@ -205,7 +205,7 @@ Admin (session required):
 
 Fullscreen signage in any TV browser:
 
-**https://lagivasignage-production.up.railway.app/player**
+**https://heroic-acceptance-production-433e.up.railway.app/player**
 
 - Shows pairing code → register under Admin → Screens
 - Polls every 10s, heartbeat every 30s
@@ -224,7 +224,7 @@ Local: `http://localhost:4000/player` (with server running)
 
 **Railway (store — recommended):**
 ```properties
-SERVER_URL=https://lagivasignage-production.up.railway.app
+SERVER_URL=https://heroic-acceptance-production-433e.up.railway.app
 ```
 
 **Local Wi‑Fi test only:**
