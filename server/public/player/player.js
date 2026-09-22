@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.1.0-web';
+  const APP_VERSION = '1.1.1-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -9,6 +9,8 @@
 
   const imageView = document.getElementById('imageView');
   const videoView = document.getElementById('videoView');
+  const bgImage = document.getElementById('bgImage');
+  const bgVideo = document.getElementById('bgVideo');
   const waitingPanel = document.getElementById('waitingPanel');
   const waitingText = document.getElementById('waitingText');
   const pairingPanel = document.getElementById('pairingPanel');
@@ -145,6 +147,36 @@
     } catch {
       /* ignore */
     }
+    try {
+      bgVideo.pause();
+      bgVideo.removeAttribute('src');
+      bgVideo.load();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function syncBackground(url, type) {
+    if (type === 'video') {
+      setVisible(bgImage, false);
+      setVisible(bgVideo, true);
+      bgVideo.src = url;
+      bgVideo.muted = true;
+      bgVideo.loop = true;
+      bgVideo.playsInline = true;
+      bgVideo.play().catch(() => {});
+    } else {
+      try {
+        bgVideo.pause();
+        bgVideo.removeAttribute('src');
+        bgVideo.load();
+      } catch {
+        /* ignore */
+      }
+      setVisible(bgVideo, false);
+      setVisible(bgImage, true);
+      bgImage.src = url;
+    }
   }
 
   function displayMedia(url, type) {
@@ -169,6 +201,8 @@
     cachedType = type;
     showingMedia = true;
     store.set('cachedType', type);
+
+    syncBackground(url, type);
 
     if (type === 'video') {
       setVisible(imageView, false);
