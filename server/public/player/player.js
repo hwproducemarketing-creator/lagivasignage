@@ -1,8 +1,10 @@
 (() => {
-  const APP_VERSION = '1.2.0-web';
+  const APP_VERSION = '1.2.1-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
+  const WAKE_LOCK_MS = 30_000;
+  const PAGE_RELOAD_MS = 60_000;
   const CACHE_NAME = 'hw-signage-media-v1';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
@@ -61,6 +63,8 @@
   let slideTimer = null;
   let bgRaf = 0;
   let useCanvasBg = true;
+  let reloadTimer = null;
+  let wakeLockTimer = null;
 
   function setVisible(el, visible) {
     if (!el) return;
@@ -473,6 +477,8 @@
   async function showPlaylistItem(index) {
     if (!playlistItems.length) return;
     playlistIndex = ((index % playlistItems.length) + playlistItems.length) % playlistItems.length;
+    store.set('playlistIndex', String(playlistIndex));
+    store.set('playlistItemStartedAt', String(Date.now()));
     const item = playlistItems[playlistIndex];
     const absoluteUrl = new URL(item.url, location.origin).href;
 
@@ -546,11 +552,25 @@
 
     playMode = current.mode === 'playlist' || items.length > 1 ? 'playlist' : 'single';
     playlistItems = items;
-    playlistIndex = 0;
+
+    const savedVersion = Number(store.get('contentVersion', '-1'));
+    const savedIndex = Number(store.get('playlistIndex', '0'));
+    let startIndex = 0;
+    if (
+      Number(current.version) === savedVersion &&
+      Number.isFinite(savedIndex) &&
+      savedIndex >= 0 &&
+      savedIndex < items.length
+    ) {
+      startIndex = savedIndex;
+    }
+
+    playlistIndex = startIndex;
     contentVersion = current.version;
     store.set('contentVersion', String(contentVersion));
+    store.set('playlistIndex', String(startIndex));
     store.set('lastUpdate', new Date().toISOString());
-    showPlaylistItem(0);
+    showPlaylistItem(startIndex);
   }
 
   async function pollOnce() {
@@ -620,8 +640,17 @@
     if (pollTimer) clearInterval(pollTimer);
     if (hbTimer) clearInterval(hbTimer);
     if (pairTimer) clearInterval(pairTimer);
+    if (wakeLockTimer) clearInterval(wakeLockTimer);
     stopSlideTimer();
-    pollTimer = hbTimer = pairTimer = null;
+    pollTimer = hbTimer = pairTimer = wakeLockTimer = null;
+  }
+
+  function schedulePageReload() {
+    if (reloadTimer) clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      location.reload();
+    }, PAGE_RELOAD_MS);
   }
 
   function startLoops() {
@@ -632,14 +661,27 @@
     }
     pollOnce();
     sendHeartbeat();
+    requestWakeLock();
     pollTimer = setInterval(pollOnce, POLL_MS);
     hbTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
     pairTimer = setInterval(checkPairing, PAIRING_MS);
+    wakeLockTimer = setInterval(() => {
+      requestWakeLock();
+    }, WAKE_LOCK_MS);
+    schedulePageReload();
   }
 
   async function requestWakeLock() {
     try {
       if ('wakeLock' in navigator) {
+        if (wakeLock) {
+          try {
+            await wakeLock.release();
+          } catch {
+            /* ignore */
+          }
+          wakeLock = null;
+        }
         wakeLock = await navigator.wakeLock.request('screen');
         wakeLock.addEventListener('release', () => {
           wakeLock = null;
@@ -729,8 +771,16 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       requestWakeLock();
+      schedulePageReload();
       pollOnce();
       if (!isRegistered()) ensurePairingCode();
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (reloadTimer) {
+      clearTimeout(reloadTimer);
+      reloadTimer = null;
     }
   });
 
@@ -740,6 +790,7 @@
     await restoreCache();
     startLoops();
     requestWakeLock();
+    schedulePageReload();
   }
 
   boot();
