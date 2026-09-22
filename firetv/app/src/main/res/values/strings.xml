@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">H&amp;W Signage</string>
+    <string name="brand">H&amp;W PRODUCE</string>
+    <string name="waiting">Waiting for signage…</string>
+    <string name="digital_signage">DIGITAL SIGNAGE</string>
+    <string name="device_code">DEVICE CODE</string>
+    <string name="pairing_hint">Go to the admin dashboard → Screens → Add Screen</string>
+</resources>

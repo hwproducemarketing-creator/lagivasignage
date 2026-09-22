@@ -1,0 +1,10 @@
+# Copy to local.properties and set your SDK + server URL
+#
+# Local test (PC on same Wi‑Fi):
+#   SERVER_URL=http://192.168.1.50:4000
+#
+# Railway (store / production — no laptop needed):
+#   SERVER_URL=https://YOUR-APP.up.railway.app
+#
+sdk.dir=C:\\Users\\YOU\\AppData\\Local\\Android\\Sdk
+SERVER_URL=https://YOUR-APP.up.railway.app

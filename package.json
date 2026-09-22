@@ -1,0 +1,21 @@
+{
+  "name": "hw-signage",
+  "version": "1.0.0",
+  "private": true,
+  "description": "H&W Produce Digital Signage",
+  "workspaces": [
+    "server",
+    "admin"
+  ],
+  "scripts": {
+    "install:all": "npm install",
+    "dev": "concurrently -n server,admin -c green,cyan \"npm run dev -w server\" \"npm run dev -w admin\"",
+    "dev:server": "npm run dev -w server",
+    "dev:admin": "npm run dev -w admin",
+    "start": "npm run start -w server",
+    "build": "npm run build -w admin"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

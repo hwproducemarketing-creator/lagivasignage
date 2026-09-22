@@ -1,0 +1,13 @@
+# Prevent shipping local secrets / DBs into the image
+.git
+.env
+server/.env
+**/node_modules
+admin/dist
+server/database/*.db
+server/database/*.db-*
+server/uploads/**
+!server/uploads/.gitkeep
+firetv
+*.md
+.cursor
