@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.0.0-web';
+  const APP_VERSION = '1.0.1-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -37,14 +37,23 @@
   let contentVersion = Number(store.get('contentVersion', '-1'));
   let cachedType = store.get('cachedType');
   let cachedObjectUrl = null;
+  let showingMedia = false;
   let networkOk = false;
+  let lastError = '';
   let wakeLock = null;
   let tapCount = 0;
   let tapTimer = null;
 
+  function setVisible(el, visible) {
+    if (!el) return;
+    el.hidden = !visible;
+    el.style.display = visible ? '' : 'none';
+  }
+
   function apiUrl(path) {
-    // Same origin on Railway (or local server)
-    return path.startsWith('http') ? path : path;
+    if (!path) return path;
+    if (path.startsWith('http')) return path;
+    return path;
   }
 
   async function jsonFetch(path, options = {}) {
@@ -71,21 +80,34 @@
     return data;
   }
 
+  function noteError(err, context) {
+    const msg = `${context}: ${err && err.message ? err.message : String(err)}`;
+    lastError = `${new Date().toISOString()} ${msg}`;
+    console.warn('[hw-signage]', msg, err);
+  }
+
+  function mediaIsVisible() {
+    if (showingMedia && cachedObjectUrl) return true;
+    const imgOk = imageView.style.display !== 'none' && !imageView.hidden && !!imageView.getAttribute('src');
+    const vidOk = videoView.style.display !== 'none' && !videoView.hidden && !!videoView.getAttribute('src');
+    return imgOk || vidOk;
+  }
+
   function showWaiting(msg) {
-    waitingPanel.hidden = false;
-    pairingPanel.hidden = true;
-    imageView.hidden = true;
-    videoView.hidden = true;
-    stopVideo();
+    if (mediaIsVisible()) return;
+    setVisible(waitingPanel, true);
+    setVisible(pairingPanel, false);
     if (msg) waitingText.textContent = msg;
   }
 
   function showPairing() {
-    waitingPanel.hidden = true;
-    pairingPanel.hidden = false;
-    imageView.hidden = true;
-    videoView.hidden = true;
-    stopVideo();
+    // Don't cover content once media is on screen
+    if (mediaIsVisible()) {
+      setVisible(pairingPanel, false);
+      return;
+    }
+    setVisible(waitingPanel, false);
+    setVisible(pairingPanel, true);
     pairingCodeEl.textContent = pairingCode || '---- ----';
   }
 
@@ -99,47 +121,58 @@
     }
   }
 
-  function displayMedia(objectUrl, type) {
-    waitingPanel.hidden = true;
-    pairingPanel.hidden = true;
-    if (cachedObjectUrl && cachedObjectUrl !== objectUrl) {
+  function displayMedia(url, type) {
+    setVisible(waitingPanel, false);
+    setVisible(pairingPanel, false);
+
+    if (cachedObjectUrl && cachedObjectUrl !== url && cachedObjectUrl.startsWith('blob:')) {
       try {
         URL.revokeObjectURL(cachedObjectUrl);
       } catch {
         /* ignore */
       }
     }
-    cachedObjectUrl = objectUrl;
+    cachedObjectUrl = url;
     cachedType = type;
+    showingMedia = true;
     store.set('cachedType', type);
 
     if (type === 'video') {
-      imageView.hidden = true;
-      videoView.hidden = false;
-      videoView.src = objectUrl;
+      setVisible(imageView, false);
+      setVisible(videoView, true);
+      videoView.src = url;
       videoView.muted = true;
       videoView.loop = true;
-      videoView.play().catch(() => {
-        /* autoplay may require a gesture on some browsers */
-      });
+      videoView.playsInline = true;
+      videoView.play().catch((err) => noteError(err, 'video.play'));
     } else {
       stopVideo();
-      videoView.hidden = true;
-      imageView.hidden = false;
-      imageView.src = objectUrl;
+      setVisible(videoView, false);
+      setVisible(imageView, true);
+      imageView.src = url;
+      imageView.onload = () => {
+        showingMedia = true;
+      };
+      imageView.onerror = () => {
+        noteError(new Error('image failed to load'), 'image');
+        // Fallback: try absolute URL without blob
+        if (url.startsWith('blob:')) {
+          showingMedia = false;
+        }
+      };
     }
   }
 
   async function cachePut(version, type, blob) {
+    if (!('caches' in window)) return;
     const cache = await caches.open(CACHE_NAME);
-    const key = `/__cached__/v${version}`;
+    const key = new Request(`${location.origin}/__cached__/v${version}`);
     const headers = new Headers({
-      'Content-Type': type === 'video' ? 'video/mp4' : 'image/jpeg',
+      'Content-Type': type === 'video' ? 'video/mp4' : blob.type || 'image/jpeg',
       'X-Signage-Type': type,
       'X-Signage-Version': String(version),
     });
-    await cache.put(key, new Response(blob, { headers }));
-    // Drop older entries
+    await cache.put(key, new Response(blob.slice(0), { headers }));
     const keys = await cache.keys();
     await Promise.all(
       keys
@@ -149,6 +182,7 @@
   }
 
   async function cacheGetLatest() {
+    if (!('caches' in window)) return null;
     const cache = await caches.open(CACHE_NAME);
     const keys = await cache.keys();
     const cached = keys.filter((r) => r.url.includes('/__cached__/'));
@@ -158,7 +192,8 @@
     const res = await cache.match(req);
     if (!res) return null;
     const blob = await res.blob();
-    const type = res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
+    const type =
+      res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
     const version = Number(res.headers.get('X-Signage-Version') || '-1');
     return { blob, type, version, objectUrl: URL.createObjectURL(blob) };
   }
@@ -174,8 +209,8 @@
         displayMedia(hit.objectUrl, hit.type);
         return true;
       }
-    } catch {
-      /* ignore */
+    } catch (err) {
+      noteError(err, 'restoreCache');
     }
     return false;
   }
@@ -194,16 +229,14 @@
       store.set('pairingCode', pairingCode);
       pairingCodeEl.textContent = pairingCode;
       networkOk = true;
-    } catch {
+    } catch (err) {
       networkOk = false;
+      noteError(err, 'pairing-code');
     }
   }
 
   async function checkPairing() {
-    if (deviceId) {
-      startPlayerLoops();
-      return;
-    }
+    if (deviceId) return;
     if (!pairingCode) {
       await ensurePairingCode();
       return;
@@ -214,36 +247,60 @@
       if (data.status === 'registered' && data.deviceId) {
         deviceId = data.deviceId;
         store.set('deviceId', deviceId);
-        startPlayerLoops();
+        setVisible(pairingPanel, false);
       }
-    } catch {
+    } catch (err) {
       networkOk = false;
+      noteError(err, 'pairing-status');
       if (!pairingCode) await ensurePairingCode();
     }
   }
 
   async function pollOnce() {
-    if (!deviceId) return;
     try {
       const current = await jsonFetch('/api/screen/current');
       networkOk = true;
-      if (!current.url || !current.type) return;
-      if (current.version === contentVersion) return;
+      if (!current.url || !current.type) {
+        if (!mediaIsVisible()) showWaiting('Waiting for signage…');
+        return;
+      }
 
-      const res = await fetch(apiUrl(current.url));
-      if (!res.ok) return;
-      const blob = await res.blob();
-      if (!blob || blob.size <= 0) return;
+      const sameVersion = current.version === contentVersion;
+      if (sameVersion && mediaIsVisible()) return;
 
-      await cachePut(current.version, current.type, blob);
-      contentVersion = current.version;
-      store.set('contentVersion', String(contentVersion));
-      store.set('lastUpdate', new Date().toISOString());
+      // Prefer direct URL first (most reliable on TV browsers), then blob cache
+      const absoluteUrl = new URL(current.url, location.origin).href;
 
-      const objectUrl = URL.createObjectURL(blob);
-      displayMedia(objectUrl, current.type);
-    } catch {
+      try {
+        const res = await fetch(absoluteUrl);
+        if (!res.ok) throw new Error(`download HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (!blob || blob.size <= 0) throw new Error('empty download');
+
+        // Show immediately — never block display on Cache API
+        const objectUrl = URL.createObjectURL(blob);
+        displayMedia(objectUrl, current.type);
+
+        contentVersion = current.version;
+        store.set('contentVersion', String(contentVersion));
+        store.set('lastUpdate', new Date().toISOString());
+
+        try {
+          await cachePut(current.version, current.type, blob);
+        } catch (err) {
+          noteError(err, 'cachePut');
+        }
+      } catch (dlErr) {
+        noteError(dlErr, 'download');
+        // Last resort: point <img>/<video> at the server URL directly
+        displayMedia(absoluteUrl, current.type);
+        contentVersion = current.version;
+        store.set('contentVersion', String(contentVersion));
+        store.set('lastUpdate', new Date().toISOString());
+      }
+    } catch (err) {
       networkOk = false;
+      noteError(err, 'poll');
       // Keep showing cached content silently
     }
   }
@@ -261,8 +318,9 @@
       });
       store.set('lastHeartbeat', new Date().toISOString());
       networkOk = true;
-    } catch {
+    } catch (err) {
       networkOk = false;
+      noteError(err, 'heartbeat');
     }
   }
 
@@ -277,19 +335,19 @@
     pollTimer = hbTimer = pairTimer = null;
   }
 
-  function startPlayerLoops() {
+  function startLoops() {
     clearTimers();
-    pairingPanel.hidden = true;
     pollOnce();
     sendHeartbeat();
+    if (!deviceId) {
+      ensurePairingCode().then(() => {
+        if (!mediaIsVisible()) showPairing();
+      });
+    } else {
+      setVisible(pairingPanel, false);
+    }
     pollTimer = setInterval(pollOnce, POLL_MS);
     hbTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
-  }
-
-  function startPairingLoop() {
-    clearTimers();
-    showPairing();
-    ensurePairingCode();
     pairTimer = setInterval(checkPairing, PAIRING_MS);
   }
 
@@ -301,25 +359,22 @@
           wakeLock = null;
         });
       }
-    } catch {
-      /* unsupported / denied */
+    } catch (err) {
+      noteError(err, 'wakeLock');
     }
   }
 
   function enterFullscreen() {
     const el = document.documentElement;
-    const req =
-      el.requestFullscreen ||
-      el.webkitRequestFullscreen ||
-      el.msRequestFullscreen;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
     if (req) {
-      req.call(el).catch(() => {});
+      req.call(el).catch((err) => noteError(err, 'fullscreen'));
     }
   }
 
   function toggleDebug() {
-    if (!debugPanel.hidden) {
-      debugPanel.hidden = true;
+    if (debugPanel.style.display !== 'none' && !debugPanel.hidden) {
+      setVisible(debugPanel, false);
       return;
     }
     debugText.textContent = [
@@ -328,14 +383,16 @@
       `App version: ${APP_VERSION}`,
       `Server: ${location.origin}`,
       `Signage version: ${contentVersion}`,
+      `Showing media: ${mediaIsVisible()}`,
       `Cached type: ${cachedType || '—'}`,
       `Last update: ${store.get('lastUpdate') || '—'}`,
       `Last heartbeat: ${store.get('lastHeartbeat') || '—'}`,
       `Network: ${networkOk ? 'OK' : 'Unavailable (using cache)'}`,
+      `Last error: ${lastError || '—'}`,
       '',
       'Tap 3× or Esc to close',
     ].join('\n');
-    debugPanel.hidden = false;
+    setVisible(debugPanel, true);
   }
 
   document.addEventListener('click', () => {
@@ -353,25 +410,22 @@
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !debugPanel.hidden) {
-      debugPanel.hidden = true;
-    }
+    if (e.key === 'Escape') setVisible(debugPanel, false);
     if (e.key === 'f' || e.key === 'F') enterFullscreen();
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') requestWakeLock();
+    if (document.visibilityState === 'visible') {
+      requestWakeLock();
+      pollOnce();
+    }
   });
 
   async function boot() {
+    setVisible(debugPanel, false);
     const hasCache = await restoreCache();
     if (!hasCache) showWaiting('Waiting for signage…');
-
-    if (!deviceId) {
-      startPairingLoop();
-    } else {
-      startPlayerLoops();
-    }
+    startLoops();
     requestWakeLock();
   }
 
