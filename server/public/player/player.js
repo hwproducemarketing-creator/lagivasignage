@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.4.1-web';
+  const APP_VERSION = '1.4.2-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -204,49 +204,21 @@
     return imgOk || vidOk;
   }
 
-  /** Always-visible side rail: show XXXX-XXXX pair code for Add Screen (never deviceId alone as the code). */
+  /** Always-visible side rail: DEVICE CODE = XXXX-XXXX. Zero interaction required. */
   function updateCodeRail() {
     document.body.classList.add('has-code-rail');
     if (!codeRail) return;
 
     const pair = displayPairCode();
-
-    if (!isRegistered()) {
-      codeRail.classList.add('code-rail--setup');
-      codeRail.classList.remove('code-rail--live', 'code-rail--id-only');
-      if (codeRailLabel) codeRailLabel.textContent = 'DEVICE CODE';
-      if (codeRailCode) codeRailCode.textContent = pair || 'Getting…';
-      if (codeRailHint) {
-        codeRailHint.textContent = 'Phone: Admin → Screens → Add Screen';
-      }
-      if (codeRailSub) codeRailSub.textContent = '';
-      return;
-    }
-
-    // Registered: prefer stored pair code (XXXX-XXXX). Never present deviceId as the Add Screen code.
-    if (pair) {
-      codeRail.classList.add('code-rail--setup');
-      codeRail.classList.remove('code-rail--live', 'code-rail--id-only');
-      if (codeRailLabel) codeRailLabel.textContent = 'PAIR CODE';
-      if (codeRailCode) codeRailCode.textContent = pair;
-      if (codeRailHint) {
-        codeRailHint.textContent = 'Already paired · Tap 3× → Reset for a new code';
-      }
-      if (codeRailSub) {
-        codeRailSub.textContent = deviceName || deviceId || '';
-      }
-      return;
-    }
-
-    codeRail.classList.remove('code-rail--setup', 'code-rail--live');
-    codeRail.classList.add('code-rail--id-only');
-    if (codeRailLabel) codeRailLabel.textContent = 'DEVICE ID';
-    if (codeRailCode) codeRailCode.textContent = deviceId || '—';
+    codeRail.classList.add('code-rail--setup');
+    codeRail.classList.remove('code-rail--live', 'code-rail--id-only');
+    if (codeRailLabel) codeRailLabel.textContent = 'DEVICE CODE';
+    if (codeRailCode) codeRailCode.textContent = pair || 'Getting…';
     if (codeRailHint) {
-      codeRailHint.textContent = 'Not for Add Screen · Tap 3× → Reset pairing';
+      codeRailHint.textContent = 'Phone → Screens → Add Screen → enter this code';
     }
     if (codeRailSub) {
-      codeRailSub.textContent = deviceName || '';
+      codeRailSub.textContent = isRegistered() && deviceName ? deviceName : '';
     }
   }
 
@@ -528,40 +500,65 @@
     return false;
   }
 
+  function clearLocalIdentity() {
+    deviceId = null;
+    pairingCode = null;
+    lastPairingCode = null;
+    deviceName = null;
+    store.remove('deviceId');
+    store.remove('pairingCode');
+    store.remove('deviceName');
+    store.remove('lastPairingCode');
+  }
+
+  let pairingFetchPromise = null;
+
+  /**
+   * Kiosk (no mouse): always ensure a XXXX-XXXX DEVICE CODE is on the strip.
+   * If pairingCode is missing, auto-clear stale deviceId and fetch a fresh code — no tap/Reset.
+   */
   async function ensurePairingCode() {
-    if (isRegistered()) {
-      updateCodeRail();
-      return;
-    }
-    if (pairingCode) {
+    if (formatPairCode(pairingCode)) {
       updateChrome();
       return;
     }
-    updateChrome();
-    try {
-      const data = await jsonFetch('/api/devices/pairing-code', {
-        method: 'POST',
-        body: '{}',
-      });
-      pairingCode = data.pairingCode;
-      store.set('pairingCode', pairingCode);
-      networkOk = true;
+    if (pairingFetchPromise) return pairingFetchPromise;
+
+    pairingFetchPromise = (async () => {
+      // pairingCode missing — cannot show a usable Add Screen code yet
+      if (deviceId || lastPairingCode || deviceName) {
+        clearLocalIdentity();
+      }
       updateChrome();
-    } catch (err) {
-      networkOk = false;
-      noteError(err, 'pairing-code');
-      if (codeRailCode) codeRailCode.textContent = 'Retrying…';
-      updateChrome();
-    }
+      try {
+        const data = await jsonFetch('/api/devices/pairing-code', {
+          method: 'POST',
+          body: '{}',
+        });
+        pairingCode = data.pairingCode;
+        store.set('pairingCode', pairingCode);
+        networkOk = true;
+        updateChrome();
+      } catch (err) {
+        networkOk = false;
+        noteError(err, 'pairing-code');
+        if (codeRailCode) codeRailCode.textContent = 'Retrying…';
+        updateChrome();
+      }
+    })().finally(() => {
+      pairingFetchPromise = null;
+    });
+
+    return pairingFetchPromise;
   }
 
   async function checkPairing() {
-    if (isRegistered()) {
-      updateChrome();
+    if (!formatPairCode(pairingCode)) {
+      await ensurePairingCode();
       return;
     }
-    if (!pairingCode) {
-      await ensurePairingCode();
+    if (isRegistered()) {
+      updateChrome();
       return;
     }
     try {
@@ -574,11 +571,10 @@
           deviceName = data.name;
           store.set('deviceName', deviceName);
         }
-        // Keep pair code visible on the rail (XXXX-XXXX) — never swap to deviceId
+        // Keep pairingCode so reloads still show XXXX-XXXX (never wipe to deviceId-only)
         lastPairingCode = pairingCode;
         store.set('lastPairingCode', pairingCode);
-        store.remove('pairingCode');
-        pairingCode = null;
+        store.set('pairingCode', pairingCode);
         updateChrome();
         sendHeartbeat();
       } else {
@@ -587,8 +583,15 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'pairing-status');
-      if (!pairingCode) await ensurePairingCode();
-      else updateChrome();
+      // Unknown/expired code → auto-fetch a fresh DEVICE CODE (no tap)
+      if (err.status === 404 || err.status === 400) {
+        clearLocalIdentity();
+        await ensurePairingCode();
+      } else if (!pairingCode) {
+        await ensurePairingCode();
+      } else {
+        updateChrome();
+      }
     }
   }
 
@@ -752,19 +755,17 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'heartbeat');
+      // Server lost this device (e.g. ephemeral DB) — auto get a fresh DEVICE CODE
+      if (err.status === 404) {
+        clearLocalIdentity();
+        await ensurePairingCode();
+      }
     }
   }
 
   function resetPairing() {
-    // Only explicit Reset clears identity — never the 60s reload / wake-lock refresh
-    deviceId = null;
-    pairingCode = null;
-    lastPairingCode = null;
-    deviceName = null;
-    store.remove('deviceId');
-    store.remove('pairingCode');
-    store.remove('deviceName');
-    store.remove('lastPairingCode');
+    // Debug-panel only — kiosk never requires this for a visible code
+    clearLocalIdentity();
     updateChrome();
     ensurePairingCode();
   }
@@ -793,9 +794,8 @@
   function startLoops() {
     clearTimers();
     updateChrome();
-    if (!isRegistered()) {
-      ensurePairingCode();
-    }
+    // Always ensure DEVICE CODE is on the strip (no mouse / no Reset)
+    ensurePairingCode();
     pollOnce();
     sendHeartbeat();
     requestWakeLock();
@@ -911,7 +911,7 @@
       requestWakeLock();
       schedulePageReload();
       pollOnce();
-      if (!isRegistered()) ensurePairingCode();
+      ensurePairingCode();
     }
   });
 
@@ -924,9 +924,9 @@
 
   async function boot() {
     setVisible(debugPanel, false);
-    // If we already have a deviceId (localStorage or cookie), stay registered —
-    // do not request a new pairing code or wipe identity on reload.
     updateChrome();
+    // Immediately surface DEVICE CODE; fetch if missing — never wait for tap
+    await ensurePairingCode();
     await restoreCache();
     startLoops();
     requestWakeLock();
