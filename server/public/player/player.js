@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.1.1-web';
+  const APP_VERSION = '1.2.0-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -11,6 +11,7 @@
   const videoView = document.getElementById('videoView');
   const bgImage = document.getElementById('bgImage');
   const bgVideo = document.getElementById('bgVideo');
+  const bgCanvas = document.getElementById('bgCanvas');
   const waitingPanel = document.getElementById('waitingPanel');
   const waitingText = document.getElementById('waitingText');
   const pairingPanel = document.getElementById('pairingPanel');
@@ -58,6 +59,8 @@
   let playlistIndex = 0;
   let playMode = 'single';
   let slideTimer = null;
+  let bgRaf = 0;
+  let useCanvasBg = true;
 
   function setVisible(el, visible) {
     if (!el) return;
@@ -139,7 +142,80 @@
     }
   }
 
+  function stopBgCanvas() {
+    if (bgRaf) {
+      cancelAnimationFrame(bgRaf);
+      bgRaf = 0;
+    }
+    setVisible(bgCanvas, false);
+  }
+
+  function drawCoverBlur(ctx, source, cw, ch) {
+    const sw = source.videoWidth || source.naturalWidth || source.width;
+    const sh = source.videoHeight || source.naturalHeight || source.height;
+    if (!sw || !sh) return false;
+    const scale = Math.max(cw / sw, ch / sh) * 1.2;
+    const dw = sw * scale;
+    const dh = sh * scale;
+    const dx = (cw - dw) / 2;
+    const dy = (ch - dh) / 2;
+    try {
+      ctx.filter = 'blur(32px) saturate(1.2)';
+    } catch {
+      /* older browsers */
+    }
+    ctx.drawImage(source, dx, dy, dw, dh);
+    try {
+      ctx.filter = 'none';
+    } catch {
+      /* ignore */
+    }
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+    ctx.fillRect(0, 0, cw, ch);
+    return true;
+  }
+
+  function startBgCanvasFromVideo(video) {
+    stopBgCanvas();
+    if (!bgCanvas || !video) return;
+    setVisible(bgCanvas, true);
+    setVisible(bgVideo, false);
+    setVisible(bgImage, false);
+    const ctx = bgCanvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      useCanvasBg = false;
+      setVisible(bgCanvas, false);
+      setVisible(bgVideo, true);
+      bgVideo.src = video.src || cachedObjectUrl || '';
+      bgVideo.muted = true;
+      bgVideo.loop = true;
+      bgVideo.play().catch(() => {});
+      return;
+    }
+
+    const tick = () => {
+      bgRaf = 0;
+      if (!showingMedia || cachedType !== 'video') return;
+      const cw = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
+      const ch = Math.max(1, window.innerHeight || document.documentElement.clientHeight);
+      if (bgCanvas.width !== cw) bgCanvas.width = cw;
+      if (bgCanvas.height !== ch) bgCanvas.height = ch;
+      try {
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, cw, ch);
+        if (video.readyState >= 2) {
+          drawCoverBlur(ctx, video, cw, ch);
+        }
+      } catch (err) {
+        noteError(err, 'bgCanvas');
+      }
+      bgRaf = requestAnimationFrame(tick);
+    };
+    bgRaf = requestAnimationFrame(tick);
+  }
+
   function stopVideo() {
+    stopBgCanvas();
     try {
       videoView.pause();
       videoView.removeAttribute('src');
@@ -159,13 +235,36 @@
   function syncBackground(url, type) {
     if (type === 'video') {
       setVisible(bgImage, false);
-      setVisible(bgVideo, true);
-      bgVideo.src = url;
-      bgVideo.muted = true;
-      bgVideo.loop = true;
-      bgVideo.playsInline = true;
-      bgVideo.play().catch(() => {});
+      // Prefer canvas blur drawn from the foreground video (works on TVs that ignore CSS filter on <video>)
+      if (useCanvasBg && bgCanvas) {
+        setVisible(bgVideo, false);
+        // canvas starts after foreground video has a frame
+      } else {
+        stopBgCanvas();
+        setVisible(bgVideo, true);
+        bgVideo.src = url;
+        bgVideo.muted = true;
+        bgVideo.defaultMuted = true;
+        bgVideo.volume = 0;
+        bgVideo.loop = true;
+        bgVideo.playsInline = true;
+        bgVideo.setAttribute('playsinline', '');
+        bgVideo.setAttribute('webkit-playsinline', '');
+        const playBg = () => {
+          bgVideo.play().catch(() => {});
+          try {
+            if (Math.abs((bgVideo.currentTime || 0) - (videoView.currentTime || 0)) > 0.35) {
+              bgVideo.currentTime = videoView.currentTime || 0;
+            }
+          } catch {
+            /* ignore seek errors */
+          }
+        };
+        bgVideo.onloadeddata = playBg;
+        playBg();
+      }
     } else {
+      stopBgCanvas();
       try {
         bgVideo.pause();
         bgVideo.removeAttribute('src');
@@ -202,20 +301,41 @@
     showingMedia = true;
     store.set('cachedType', type);
 
-    syncBackground(url, type);
-
     if (type === 'video') {
       setVisible(imageView, false);
       setVisible(videoView, true);
       videoView.src = url;
       videoView.muted = true;
+      videoView.defaultMuted = true;
+      videoView.volume = 0;
       videoView.loop = true;
       videoView.playsInline = true;
+      videoView.setAttribute('playsinline', '');
+      videoView.setAttribute('webkit-playsinline', '');
+
+      const onFrame = () => {
+        syncBackground(url, 'video');
+        if (useCanvasBg) startBgCanvasFromVideo(videoView);
+      };
+      videoView.onloadeddata = onFrame;
+      videoView.onplaying = () => {
+        if (useCanvasBg) startBgCanvasFromVideo(videoView);
+        if (!useCanvasBg && bgVideo && !bgVideo.paused) {
+          try {
+            bgVideo.currentTime = videoView.currentTime || 0;
+          } catch {
+            /* ignore */
+          }
+        }
+      };
       videoView.play().catch((err) => noteError(err, 'video.play'));
+      // Kick background immediately (canvas waits for frames)
+      syncBackground(url, 'video');
     } else {
       stopVideo();
       setVisible(videoView, false);
       setVisible(imageView, true);
+      syncBackground(url, 'image');
       imageView.src = url;
       imageView.onload = () => {
         showingMedia = true;
