@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.2.1-web';
+  const APP_VERSION = '1.3.0-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -16,8 +16,11 @@
   const bgCanvas = document.getElementById('bgCanvas');
   const waitingPanel = document.getElementById('waitingPanel');
   const waitingText = document.getElementById('waitingText');
-  const pairingPanel = document.getElementById('pairingPanel');
-  const pairingCodeEl = document.getElementById('pairingCode');
+  const codeRail = document.getElementById('codeRail');
+  const codeRailLabel = document.getElementById('codeRailLabel');
+  const codeRailCode = document.getElementById('codeRailCode');
+  const codeRailHint = document.getElementById('codeRailHint');
+  const codeRailSub = document.getElementById('codeRailSub');
   const debugPanel = document.getElementById('debugPanel');
   const debugText = document.getElementById('debugText');
 
@@ -48,6 +51,7 @@
 
   let deviceId = store.get('deviceId');
   let pairingCode = store.get('pairingCode');
+  let deviceName = store.get('deviceName');
   let contentVersion = Number(store.get('contentVersion', '-1'));
   let cachedType = store.get('cachedType');
   let cachedObjectUrl = null;
@@ -121,15 +125,40 @@
     return imgOk || vidOk;
   }
 
-  /** Unregistered TVs must always see the DEVICE CODE on top. */
-  function updateChrome() {
+  /** Always-visible side rail with pairing code or device id (no mouse needed). */
+  function updateCodeRail() {
+    document.body.classList.add('has-code-rail');
+    if (!codeRail) return;
+
     if (!isRegistered()) {
-      setVisible(waitingPanel, false);
-      setVisible(pairingPanel, true);
-      pairingCodeEl.textContent = pairingCode || 'Getting code…';
+      codeRail.classList.add('code-rail--setup');
+      codeRail.classList.remove('code-rail--live');
+      if (codeRailLabel) codeRailLabel.textContent = 'DEVICE CODE';
+      if (codeRailCode) codeRailCode.textContent = pairingCode || 'Getting…';
+      if (codeRailHint) {
+        codeRailHint.textContent = 'Phone: Admin → Screens → Add Screen';
+      }
+      if (codeRailSub) codeRailSub.textContent = '';
       return;
     }
-    setVisible(pairingPanel, false);
+
+    codeRail.classList.remove('code-rail--setup');
+    codeRail.classList.add('code-rail--live');
+    if (codeRailLabel) codeRailLabel.textContent = 'DEVICE';
+    if (codeRailCode) codeRailCode.textContent = deviceId || '—';
+    if (codeRailHint) codeRailHint.textContent = '';
+    if (codeRailSub) {
+      codeRailSub.textContent = deviceName || '';
+    }
+  }
+
+  function updateChrome() {
+    updateCodeRail();
+    if (!isRegistered()) {
+      // Code rail is the primary pairing UI for kiosk (no mouse)
+      setVisible(waitingPanel, false);
+      return;
+    }
     if (!mediaIsVisible()) {
       setVisible(waitingPanel, true);
       if (waitingText) waitingText.textContent = 'Waiting for signage…';
@@ -140,10 +169,10 @@
 
   function showWaiting(msg) {
     if (isRegistered() && !mediaIsVisible()) {
-      setVisible(pairingPanel, false);
       setVisible(waitingPanel, true);
       if (msg) waitingText.textContent = msg;
     }
+    updateCodeRail();
   }
 
   function stopBgCanvas() {
@@ -283,15 +312,13 @@
   }
 
   function displayMedia(url, type) {
-    // Never hide pairing for unregistered devices — keep code on top
+    // Side rail always shows code/id; never block content with a full-screen pairing panel
     if (isRegistered()) {
       setVisible(waitingPanel, false);
-      setVisible(pairingPanel, false);
     } else {
       setVisible(waitingPanel, false);
-      setVisible(pairingPanel, true);
-      pairingCodeEl.textContent = pairingCode || 'Getting code…';
     }
+    updateCodeRail();
 
     if (cachedObjectUrl && cachedObjectUrl !== url && cachedObjectUrl.startsWith('blob:')) {
       try {
@@ -404,13 +431,14 @@
   }
 
   async function ensurePairingCode() {
-    if (isRegistered()) return;
+    if (isRegistered()) {
+      updateCodeRail();
+      return;
+    }
     if (pairingCode) {
-      pairingCodeEl.textContent = pairingCode;
       updateChrome();
       return;
     }
-    pairingCodeEl.textContent = 'Getting code…';
     updateChrome();
     try {
       const data = await jsonFetch('/api/devices/pairing-code', {
@@ -419,13 +447,12 @@
       });
       pairingCode = data.pairingCode;
       store.set('pairingCode', pairingCode);
-      pairingCodeEl.textContent = pairingCode;
       networkOk = true;
       updateChrome();
     } catch (err) {
       networkOk = false;
       noteError(err, 'pairing-code');
-      pairingCodeEl.textContent = 'Retrying…';
+      if (codeRailCode) codeRailCode.textContent = 'Retrying…';
       updateChrome();
     }
   }
@@ -445,6 +472,12 @@
       if (data.status === 'registered' && data.deviceId) {
         deviceId = data.deviceId;
         store.set('deviceId', deviceId);
+        if (data.name) {
+          deviceName = data.name;
+          store.set('deviceName', deviceName);
+        }
+        // Keep last pairing code for reference until next reset
+        store.set('lastPairingCode', pairingCode);
         store.remove('pairingCode');
         pairingCode = null;
         updateChrome();
@@ -626,8 +659,11 @@
   function resetPairing() {
     deviceId = null;
     pairingCode = null;
+    deviceName = null;
     store.remove('deviceId');
     store.remove('pairingCode');
+    store.remove('deviceName');
+    store.remove('lastPairingCode');
     updateChrome();
     ensurePairingCode();
   }

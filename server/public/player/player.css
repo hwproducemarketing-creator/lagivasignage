@@ -63,13 +63,21 @@ body,
 /* --- Sharp foreground: only as large as the media (no black bars over the bg) --- */
 #mediaFg {
   position: absolute;
-  inset: 0;
+  inset: 0 0 0 0;
   z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent;
   pointer-events: none;
+  transition: right 0.2s ease;
+}
+
+/* Leave room for the code rail */
+body.has-code-rail #mediaFg,
+body.has-code-rail #mediaBg,
+body.has-code-rail #waitingPanel {
+  right: var(--code-rail-width, 120px);
 }
 
 #imageView,
@@ -98,49 +106,109 @@ body,
   cursor: default;
 }
 
-#pairingPanel {
-  z-index: 10;
-}
-
-.panel h1 {
-  font-size: clamp(2rem, 6vw, 3.5rem);
-  letter-spacing: 0.06em;
-  font-weight: 700;
-}
-
-.panel .sub {
-  margin-top: 0.5rem;
-  color: #a7f3d0;
-  letter-spacing: 0.2em;
-  font-size: clamp(0.9rem, 2.5vw, 1.25rem);
-}
-
-.panel .label {
-  margin-top: 2.5rem;
-  letter-spacing: 0.15em;
-  font-size: 1rem;
-  opacity: 0.9;
-}
-
-.panel .code {
-  margin-top: 0.75rem;
-  font-size: clamp(2.5rem, 10vw, 4rem);
-  font-weight: 700;
-  letter-spacing: 0.2em;
-}
-
-.panel .hint {
-  margin-top: 2rem;
-  max-width: 28rem;
-  line-height: 1.5;
-  color: #cce7d8;
-  font-size: clamp(0.9rem, 2.2vw, 1.15rem);
-}
-
 #waitingText {
   margin-top: 1rem;
   color: #a7f3d0;
   font-size: clamp(1.1rem, 3vw, 1.75rem);
+}
+
+/* --- Persistent device code rail (right side) --- */
+.code-rail {
+  --code-rail-width: 120px;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--code-rail-width);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1.25rem 0.5rem;
+  background: linear-gradient(180deg, #14532d 0%, #1b5e3b 55%, #0f3d28 100%);
+  border-left: 3px solid #3d9b5f;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  text-align: center;
+  pointer-events: none;
+}
+
+.code-rail--setup {
+  --code-rail-width: 160px;
+}
+
+.code-rail--live {
+  --code-rail-width: 88px;
+  opacity: 0.92;
+}
+
+.code-rail__brand {
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-size: 0.95rem;
+  color: #a7f3d0;
+}
+
+.code-rail__label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: rgba(255, 255, 255, 0.75);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+}
+
+.code-rail--setup .code-rail__label {
+  writing-mode: horizontal-tb;
+  transform: none;
+  font-size: 0.85rem;
+}
+
+.code-rail__code {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-weight: 800;
+  font-size: 1.65rem;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  color: #fff;
+  word-break: break-all;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+}
+
+.code-rail--setup .code-rail__code {
+  writing-mode: horizontal-tb;
+  transform: none;
+  font-size: clamp(1.6rem, 3.2vw, 2.4rem);
+  letter-spacing: 0.12em;
+  word-break: normal;
+}
+
+.code-rail__hint {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #cce7d8;
+  max-width: 7.5rem;
+}
+
+.code-rail--live .code-rail__hint {
+  display: none;
+}
+
+.code-rail__sub {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.65);
+  word-break: break-all;
+  max-width: 100%;
+  padding: 0 0.25rem;
+}
+
+.code-rail--setup .code-rail__sub {
+  display: none;
 }
 
 .debug {
@@ -163,4 +231,42 @@ body,
 .debug .hint {
   margin-top: 1.5rem;
   color: #aaa;
+}
+
+@media (max-width: 700px) {
+  .code-rail,
+  .code-rail--setup,
+  .code-rail--live {
+    --code-rail-width: 100%;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: auto;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem 1.25rem;
+    padding: 0.75rem 1rem;
+    border-left: none;
+    border-top: 3px solid #3d9b5f;
+  }
+
+  body.has-code-rail #mediaFg,
+  body.has-code-rail #mediaBg,
+  body.has-code-rail #waitingPanel {
+    right: 0;
+    bottom: 72px;
+  }
+
+  .code-rail__label,
+  .code-rail__code {
+    writing-mode: horizontal-tb;
+    transform: none;
+  }
+
+  .code-rail--live .code-rail__hint {
+    display: none;
+  }
 }
