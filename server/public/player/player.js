@@ -1,10 +1,9 @@
 (() => {
-  const APP_VERSION = '1.4.2-web';
+  const APP_VERSION = '1.4.3-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const WAKE_LOCK_MS = 30_000;
-  const PAGE_RELOAD_MS = 60_000;
   const CACHE_NAME = 'hw-signage-media-v1';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
@@ -126,7 +125,6 @@
   let slideTimer = null;
   let bgRaf = 0;
   let useCanvasBg = true;
-  let reloadTimer = null;
   let wakeLockTimer = null;
 
   // Re-persist identity immediately on boot (heals missing localStorage or cookie)
@@ -783,14 +781,6 @@
     pollTimer = hbTimer = pairTimer = wakeLockTimer = null;
   }
 
-  function schedulePageReload() {
-    if (reloadTimer) clearTimeout(reloadTimer);
-    reloadTimer = setTimeout(() => {
-      reloadTimer = null;
-      location.reload();
-    }, PAGE_RELOAD_MS);
-  }
-
   function startLoops() {
     clearTimers();
     updateChrome();
@@ -805,7 +795,6 @@
     wakeLockTimer = setInterval(() => {
       requestWakeLock();
     }, WAKE_LOCK_MS);
-    schedulePageReload();
   }
 
   async function requestWakeLock() {
@@ -909,16 +898,8 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       requestWakeLock();
-      schedulePageReload();
       pollOnce();
       ensurePairingCode();
-    }
-  });
-
-  window.addEventListener('pagehide', () => {
-    if (reloadTimer) {
-      clearTimeout(reloadTimer);
-      reloadTimer = null;
     }
   });
 
@@ -930,7 +911,6 @@
     await restoreCache();
     startLoops();
     requestWakeLock();
-    schedulePageReload();
   }
 
   boot();
