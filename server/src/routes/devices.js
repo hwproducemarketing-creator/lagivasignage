@@ -23,6 +23,17 @@ function makeDeviceId() {
   return `HW-TV-${randomBytes(3).toString('hex').toUpperCase()}`;
 }
 
+/** Accept XXXX-XXXX, XXXXXXXX, spaces, mixed case → canonical XXXX-XXXX */
+function normalizePairingCode(input) {
+  const alnum = String(input || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (alnum.length !== 8) {
+    return null;
+  }
+  return `${alnum.slice(0, 4)}-${alnum.slice(4)}`;
+}
+
 function statusOf(lastSeen) {
   if (!lastSeen) return 'offline';
   return Date.now() - new Date(lastSeen).getTime() <= ONLINE_MS ? 'online' : 'offline';
@@ -50,9 +61,11 @@ router.post('/pairing-code', (_req, res) => {
 
 /** Fire TV: poll until registered */
 router.get('/pairing-status/:code', (req, res) => {
-  const device = db
-    .prepare('SELECT * FROM devices WHERE pairing_code = ?')
-    .get(req.params.code.toUpperCase());
+  const code = normalizePairingCode(req.params.code);
+  if (!code) {
+    return res.status(400).json({ error: 'Invalid device code format' });
+  }
+  const device = db.prepare('SELECT * FROM devices WHERE pairing_code = ?').get(code);
 
   if (!device) {
     return res.status(404).json({ error: 'Unknown pairing code' });
@@ -63,6 +76,7 @@ router.get('/pairing-status/:code', (req, res) => {
       status: 'registered',
       deviceId: device.device_id,
       name: device.name,
+      pairingCode: device.pairing_code,
     });
   }
 
@@ -96,7 +110,13 @@ router.post('/register', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'pairingCode and name are required' });
   }
 
-  const code = String(pairingCode).toUpperCase().trim();
+  const code = normalizePairingCode(pairingCode);
+  if (!code) {
+    return res.status(400).json({
+      error: 'Invalid device code. Use the XXXX-XXXX code from the TV (not the device ID).',
+    });
+  }
+
   const device = db.prepare('SELECT * FROM devices WHERE pairing_code = ?').get(code);
   if (!device) {
     return res.status(404).json({ error: 'Invalid device code' });

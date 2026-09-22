@@ -135,12 +135,16 @@ body.has-code-rail #waitingPanel {
 }
 
 .code-rail--setup {
-  --code-rail-width: 160px;
+  --code-rail-width: 168px;
 }
 
 .code-rail--live {
   --code-rail-width: 88px;
   opacity: 0.92;
+}
+
+.code-rail--id-only {
+  --code-rail-width: 140px;
 }
 
 .code-rail__brand {
@@ -151,51 +155,39 @@ body.has-code-rail #waitingPanel {
 }
 
 .code-rail__label {
-  font-size: 0.7rem;
+  font-size: 0.85rem;
   font-weight: 700;
-  letter-spacing: 0.18em;
-  color: rgba(255, 255, 255, 0.75);
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  transform: rotate(180deg);
-}
-
-.code-rail--setup .code-rail__label {
+  letter-spacing: 0.14em;
+  color: rgba(255, 255, 255, 0.8);
   writing-mode: horizontal-tb;
   transform: none;
-  font-size: 0.85rem;
 }
 
 .code-rail__code {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-weight: 800;
-  font-size: 1.65rem;
-  letter-spacing: 0.08em;
-  line-height: 1.25;
+  font-size: clamp(1.5rem, 3vw, 2.35rem);
+  letter-spacing: 0.12em;
+  line-height: 1.2;
   color: #fff;
-  word-break: break-all;
-  writing-mode: vertical-rl;
+  word-break: normal;
+  writing-mode: horizontal-tb;
   text-orientation: mixed;
-  transform: rotate(180deg);
+  transform: none;
 }
 
-.code-rail--setup .code-rail__code {
-  writing-mode: horizontal-tb;
-  transform: none;
-  font-size: clamp(1.6rem, 3.2vw, 2.4rem);
-  letter-spacing: 0.12em;
-  word-break: normal;
+.code-rail--id-only .code-rail__code {
+  font-size: clamp(0.85rem, 1.6vw, 1.1rem);
+  letter-spacing: 0.04em;
+  word-break: break-all;
 }
 
 .code-rail__hint {
   font-size: 0.72rem;
   line-height: 1.35;
   color: #cce7d8;
-  max-width: 7.5rem;
-}
-
-.code-rail--live .code-rail__hint {
-  display: none;
+  max-width: 8.5rem;
+  display: block;
 }
 
 .code-rail__sub {
@@ -208,7 +200,8 @@ body.has-code-rail #waitingPanel {
 }
 
 .code-rail--setup .code-rail__sub {
-  display: none;
+  display: block;
+  margin-top: 0.25rem;
 }
 
 .debug {
@@ -236,7 +229,8 @@ body.has-code-rail #waitingPanel {
 @media (max-width: 700px) {
   .code-rail,
   .code-rail--setup,
-  .code-rail--live {
+  .code-rail--live,
+  .code-rail--id-only {
     --code-rail-width: 100%;
     top: auto;
     left: 0;
@@ -264,9 +258,5 @@ body.has-code-rail #waitingPanel {
   .code-rail__code {
     writing-mode: horizontal-tb;
     transform: none;
-  }
-
-  .code-rail--live .code-rail__hint {
-    display: none;
   }
 }

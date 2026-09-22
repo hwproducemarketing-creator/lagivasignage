@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.4.0-web';
+  const APP_VERSION = '1.4.1-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -109,6 +109,7 @@
 
   let deviceId = store.get('deviceId');
   let pairingCode = store.get('pairingCode');
+  let lastPairingCode = store.get('lastPairingCode');
   let deviceName = store.get('deviceName');
   let contentVersion = Number(store.get('contentVersion', '-1'));
   let cachedType = store.get('cachedType');
@@ -131,7 +132,22 @@
   // Re-persist identity immediately on boot (heals missing localStorage or cookie)
   if (deviceId) store.set('deviceId', deviceId);
   if (pairingCode) store.set('pairingCode', pairingCode);
+  if (lastPairingCode) store.set('lastPairingCode', lastPairingCode);
   if (deviceName) store.set('deviceName', deviceName);
+
+  /** Format as XXXX-XXXX for admin Add Screen (never a deviceId hex suffix). */
+  function formatPairCode(raw) {
+    if (!raw) return null;
+    const alnum = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (alnum.length >= 8) {
+      return `${alnum.slice(0, 4)}-${alnum.slice(4, 8)}`;
+    }
+    return String(raw).toUpperCase().trim();
+  }
+
+  function displayPairCode() {
+    return formatPairCode(pairingCode || lastPairingCode);
+  }
 
   function setVisible(el, visible) {
     if (!el) return;
@@ -188,16 +204,18 @@
     return imgOk || vidOk;
   }
 
-  /** Always-visible side rail with pairing code or device id (no mouse needed). */
+  /** Always-visible side rail: show XXXX-XXXX pair code for Add Screen (never deviceId alone as the code). */
   function updateCodeRail() {
     document.body.classList.add('has-code-rail');
     if (!codeRail) return;
 
+    const pair = displayPairCode();
+
     if (!isRegistered()) {
       codeRail.classList.add('code-rail--setup');
-      codeRail.classList.remove('code-rail--live');
+      codeRail.classList.remove('code-rail--live', 'code-rail--id-only');
       if (codeRailLabel) codeRailLabel.textContent = 'DEVICE CODE';
-      if (codeRailCode) codeRailCode.textContent = pairingCode || 'Getting…';
+      if (codeRailCode) codeRailCode.textContent = pair || 'Getting…';
       if (codeRailHint) {
         codeRailHint.textContent = 'Phone: Admin → Screens → Add Screen';
       }
@@ -205,11 +223,28 @@
       return;
     }
 
-    codeRail.classList.remove('code-rail--setup');
-    codeRail.classList.add('code-rail--live');
-    if (codeRailLabel) codeRailLabel.textContent = 'DEVICE';
+    // Registered: prefer stored pair code (XXXX-XXXX). Never present deviceId as the Add Screen code.
+    if (pair) {
+      codeRail.classList.add('code-rail--setup');
+      codeRail.classList.remove('code-rail--live', 'code-rail--id-only');
+      if (codeRailLabel) codeRailLabel.textContent = 'PAIR CODE';
+      if (codeRailCode) codeRailCode.textContent = pair;
+      if (codeRailHint) {
+        codeRailHint.textContent = 'Already paired · Tap 3× → Reset for a new code';
+      }
+      if (codeRailSub) {
+        codeRailSub.textContent = deviceName || deviceId || '';
+      }
+      return;
+    }
+
+    codeRail.classList.remove('code-rail--setup', 'code-rail--live');
+    codeRail.classList.add('code-rail--id-only');
+    if (codeRailLabel) codeRailLabel.textContent = 'DEVICE ID';
     if (codeRailCode) codeRailCode.textContent = deviceId || '—';
-    if (codeRailHint) codeRailHint.textContent = '';
+    if (codeRailHint) {
+      codeRailHint.textContent = 'Not for Add Screen · Tap 3× → Reset pairing';
+    }
     if (codeRailSub) {
       codeRailSub.textContent = deviceName || '';
     }
@@ -539,7 +574,8 @@
           deviceName = data.name;
           store.set('deviceName', deviceName);
         }
-        // Keep last pairing code for reference until next reset
+        // Keep pair code visible on the rail (XXXX-XXXX) — never swap to deviceId
+        lastPairingCode = pairingCode;
         store.set('lastPairingCode', pairingCode);
         store.remove('pairingCode');
         pairingCode = null;
@@ -723,6 +759,7 @@
     // Only explicit Reset clears identity — never the 60s reload / wake-lock refresh
     deviceId = null;
     pairingCode = null;
+    lastPairingCode = null;
     deviceName = null;
     store.remove('deviceId');
     store.remove('pairingCode');
@@ -810,7 +847,7 @@
     pre.textContent = [
       'H&W Signage Web Player',
       `Device ID: ${deviceId || '(not registered)'}`,
-      `Pairing code: ${pairingCode || store.get('lastPairingCode') || '—'}`,
+      `Pairing code: ${displayPairCode() || '—'}`,
       `App version: ${APP_VERSION}`,
       `Persist: localStorage+cookie`,
       `Server: ${location.origin}`,

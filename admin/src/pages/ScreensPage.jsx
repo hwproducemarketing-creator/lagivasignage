@@ -125,6 +125,10 @@ export default function ScreensPage() {
       )}
 
       <Modal open={showAdd} title="Register Device" onClose={() => setShowAdd(false)}>
+        <p className="mb-3 text-sm text-hw-muted">
+          Type the <strong>XXXX-XXXX</strong> code from the TV side strip (labeled DEVICE CODE /
+          PAIR CODE). Do not use a Device ID like HW-TV-….
+        </p>
         <label className="label">Device code</label>
         <input
           className="input mb-3 uppercase tracking-widest"
