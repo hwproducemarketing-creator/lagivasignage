@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.0.1-web';
+  const APP_VERSION = '1.0.2-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -30,6 +30,13 @@
         /* ignore quota */
       }
     },
+    remove(key) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        /* ignore */
+      }
+    },
   };
 
   let deviceId = store.get('deviceId');
@@ -48,6 +55,10 @@
     if (!el) return;
     el.hidden = !visible;
     el.style.display = visible ? '' : 'none';
+  }
+
+  function isRegistered() {
+    return !!(deviceId && String(deviceId).trim());
   }
 
   function apiUrl(path) {
@@ -88,27 +99,36 @@
 
   function mediaIsVisible() {
     if (showingMedia && cachedObjectUrl) return true;
-    const imgOk = imageView.style.display !== 'none' && !imageView.hidden && !!imageView.getAttribute('src');
-    const vidOk = videoView.style.display !== 'none' && !videoView.hidden && !!videoView.getAttribute('src');
+    const imgOk =
+      imageView.style.display !== 'none' && !imageView.hidden && !!imageView.getAttribute('src');
+    const vidOk =
+      videoView.style.display !== 'none' && !videoView.hidden && !!videoView.getAttribute('src');
     return imgOk || vidOk;
   }
 
-  function showWaiting(msg) {
-    if (mediaIsVisible()) return;
-    setVisible(waitingPanel, true);
-    setVisible(pairingPanel, false);
-    if (msg) waitingText.textContent = msg;
-  }
-
-  function showPairing() {
-    // Don't cover content once media is on screen
-    if (mediaIsVisible()) {
-      setVisible(pairingPanel, false);
+  /** Unregistered TVs must always see the DEVICE CODE on top. */
+  function updateChrome() {
+    if (!isRegistered()) {
+      setVisible(waitingPanel, false);
+      setVisible(pairingPanel, true);
+      pairingCodeEl.textContent = pairingCode || 'Getting code…';
       return;
     }
-    setVisible(waitingPanel, false);
-    setVisible(pairingPanel, true);
-    pairingCodeEl.textContent = pairingCode || '---- ----';
+    setVisible(pairingPanel, false);
+    if (!mediaIsVisible()) {
+      setVisible(waitingPanel, true);
+      if (waitingText) waitingText.textContent = 'Waiting for signage…';
+    } else {
+      setVisible(waitingPanel, false);
+    }
+  }
+
+  function showWaiting(msg) {
+    if (isRegistered() && !mediaIsVisible()) {
+      setVisible(pairingPanel, false);
+      setVisible(waitingPanel, true);
+      if (msg) waitingText.textContent = msg;
+    }
   }
 
   function stopVideo() {
@@ -122,8 +142,15 @@
   }
 
   function displayMedia(url, type) {
-    setVisible(waitingPanel, false);
-    setVisible(pairingPanel, false);
+    // Never hide pairing for unregistered devices — keep code on top
+    if (isRegistered()) {
+      setVisible(waitingPanel, false);
+      setVisible(pairingPanel, false);
+    } else {
+      setVisible(waitingPanel, false);
+      setVisible(pairingPanel, true);
+      pairingCodeEl.textContent = pairingCode || 'Getting code…';
+    }
 
     if (cachedObjectUrl && cachedObjectUrl !== url && cachedObjectUrl.startsWith('blob:')) {
       try {
@@ -155,10 +182,7 @@
       };
       imageView.onerror = () => {
         noteError(new Error('image failed to load'), 'image');
-        // Fallback: try absolute URL without blob
-        if (url.startsWith('blob:')) {
-          showingMedia = false;
-        }
+        if (url.startsWith('blob:')) showingMedia = false;
       };
     }
   }
@@ -216,10 +240,14 @@
   }
 
   async function ensurePairingCode() {
+    if (isRegistered()) return;
     if (pairingCode) {
       pairingCodeEl.textContent = pairingCode;
+      updateChrome();
       return;
     }
+    pairingCodeEl.textContent = 'Getting code…';
+    updateChrome();
     try {
       const data = await jsonFetch('/api/devices/pairing-code', {
         method: 'POST',
@@ -229,14 +257,20 @@
       store.set('pairingCode', pairingCode);
       pairingCodeEl.textContent = pairingCode;
       networkOk = true;
+      updateChrome();
     } catch (err) {
       networkOk = false;
       noteError(err, 'pairing-code');
+      pairingCodeEl.textContent = 'Retrying…';
+      updateChrome();
     }
   }
 
   async function checkPairing() {
-    if (deviceId) return;
+    if (isRegistered()) {
+      updateChrome();
+      return;
+    }
     if (!pairingCode) {
       await ensurePairingCode();
       return;
@@ -247,12 +281,18 @@
       if (data.status === 'registered' && data.deviceId) {
         deviceId = data.deviceId;
         store.set('deviceId', deviceId);
-        setVisible(pairingPanel, false);
+        store.remove('pairingCode');
+        pairingCode = null;
+        updateChrome();
+        sendHeartbeat();
+      } else {
+        updateChrome();
       }
     } catch (err) {
       networkOk = false;
       noteError(err, 'pairing-status');
       if (!pairingCode) await ensurePairingCode();
+      else updateChrome();
     }
   }
 
@@ -262,13 +302,16 @@
       networkOk = true;
       if (!current.url || !current.type) {
         if (!mediaIsVisible()) showWaiting('Waiting for signage…');
+        updateChrome();
         return;
       }
 
       const sameVersion = current.version === contentVersion;
-      if (sameVersion && mediaIsVisible()) return;
+      if (sameVersion && mediaIsVisible()) {
+        updateChrome();
+        return;
+      }
 
-      // Prefer direct URL first (most reliable on TV browsers), then blob cache
       const absoluteUrl = new URL(current.url, location.origin).href;
 
       try {
@@ -277,7 +320,6 @@
         const blob = await res.blob();
         if (!blob || blob.size <= 0) throw new Error('empty download');
 
-        // Show immediately — never block display on Cache API
         const objectUrl = URL.createObjectURL(blob);
         displayMedia(objectUrl, current.type);
 
@@ -292,21 +334,21 @@
         }
       } catch (dlErr) {
         noteError(dlErr, 'download');
-        // Last resort: point <img>/<video> at the server URL directly
         displayMedia(absoluteUrl, current.type);
         contentVersion = current.version;
         store.set('contentVersion', String(contentVersion));
         store.set('lastUpdate', new Date().toISOString());
       }
+      updateChrome();
     } catch (err) {
       networkOk = false;
       noteError(err, 'poll');
-      // Keep showing cached content silently
+      updateChrome();
     }
   }
 
   async function sendHeartbeat() {
-    if (!deviceId) return;
+    if (!isRegistered()) return;
     try {
       await jsonFetch('/api/screen/heartbeat', {
         method: 'POST',
@@ -324,6 +366,15 @@
     }
   }
 
+  function resetPairing() {
+    deviceId = null;
+    pairingCode = null;
+    store.remove('deviceId');
+    store.remove('pairingCode');
+    updateChrome();
+    ensurePairingCode();
+  }
+
   let pollTimer = null;
   let hbTimer = null;
   let pairTimer = null;
@@ -337,15 +388,12 @@
 
   function startLoops() {
     clearTimers();
+    updateChrome();
+    if (!isRegistered()) {
+      ensurePairingCode();
+    }
     pollOnce();
     sendHeartbeat();
-    if (!deviceId) {
-      ensurePairingCode().then(() => {
-        if (!mediaIsVisible()) showPairing();
-      });
-    } else {
-      setVisible(pairingPanel, false);
-    }
     pollTimer = setInterval(pollOnce, POLL_MS);
     hbTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
     pairTimer = setInterval(checkPairing, PAIRING_MS);
@@ -377,9 +425,12 @@
       setVisible(debugPanel, false);
       return;
     }
-    debugText.textContent = [
+    debugText.innerHTML = '';
+    const pre = document.createElement('pre');
+    pre.textContent = [
       'H&W Signage Web Player',
       `Device ID: ${deviceId || '(not registered)'}`,
+      `Pairing code: ${pairingCode || '—'}`,
       `App version: ${APP_VERSION}`,
       `Server: ${location.origin}`,
       `Signage version: ${contentVersion}`,
@@ -392,10 +443,32 @@
       '',
       'Tap 3× or Esc to close',
     ].join('\n');
+    debugText.appendChild(pre);
+
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.textContent = 'Reset pairing (new device code)';
+    resetBtn.style.cssText =
+      'margin-top:1.25rem;padding:0.85rem 1.25rem;font-size:1.1rem;font-weight:700;cursor:pointer;background:#1B5E3B;color:#fff;border:none;border-radius:8px;';
+    resetBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      resetPairing();
+      setVisible(debugPanel, false);
+    });
+    debugText.appendChild(resetBtn);
+
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = 'Use Reset if you need a new code for Screens → Add Screen';
+    debugText.appendChild(hint);
+
     setVisible(debugPanel, true);
   }
 
-  document.addEventListener('click', () => {
+  document.addEventListener('click', (e) => {
+    if (e.target && (e.target.closest('button') || e.target.closest('#debugPanel'))) {
+      return;
+    }
     enterFullscreen();
     requestWakeLock();
     tapCount += 1;
@@ -418,13 +491,14 @@
     if (document.visibilityState === 'visible') {
       requestWakeLock();
       pollOnce();
+      if (!isRegistered()) ensurePairingCode();
     }
   });
 
   async function boot() {
     setVisible(debugPanel, false);
-    const hasCache = await restoreCache();
-    if (!hasCache) showWaiting('Waiting for signage…');
+    updateChrome();
+    await restoreCache();
     startLoops();
     requestWakeLock();
   }

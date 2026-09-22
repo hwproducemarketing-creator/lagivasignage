@@ -32,7 +32,7 @@ body,
 .panel {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 5;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -41,6 +41,10 @@ body,
   padding: 2rem;
   background: linear-gradient(160deg, #14532d 0%, #1b5e3b 45%, #0f3d28 100%);
   cursor: default;
+}
+
+#pairingPanel {
+  z-index: 10;
 }
 
 .panel h1 {
