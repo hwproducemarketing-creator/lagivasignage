@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.3.0-web';
+  const APP_VERSION = '1.4.0-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -8,6 +8,9 @@
   const CACHE_NAME = 'hw-signage-media-v1';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
+  /** ~400 days — Pi Chromium often clears localStorage more aggressively than cookies */
+  const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 400;
+  const COOKIE_KEYS = new Set(['deviceId', 'pairingCode', 'deviceName', 'lastPairingCode']);
 
   const imageView = document.getElementById('imageView');
   const videoView = document.getElementById('videoView');
@@ -24,14 +27,67 @@
   const debugPanel = document.getElementById('debugPanel');
   const debugText = document.getElementById('debugText');
 
+  function cookieName(key) {
+    return `hw_${key}`;
+  }
+
+  function readCookie(name) {
+    try {
+      const parts = document.cookie ? document.cookie.split(';') : [];
+      for (const part of parts) {
+        const idx = part.indexOf('=');
+        if (idx < 0) continue;
+        const k = part.slice(0, idx).trim();
+        if (k !== name) continue;
+        return decodeURIComponent(part.slice(idx + 1).trim());
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function writeCookie(name, value) {
+    try {
+      document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(value)}; path=/; max-age=${COOKIE_MAX_AGE_SEC}; SameSite=Lax`;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function clearCookie(name) {
+    try {
+      document.cookie = `${encodeURIComponent(name)}=; path=/; max-age=0; SameSite=Lax`;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Dual-write identity to localStorage + cookie so Pi kiosk survives reloads. */
   const store = {
     get(key, fallback = null) {
+      let fromLs = null;
       try {
-        const v = localStorage.getItem(key);
-        return v == null ? fallback : v;
+        fromLs = localStorage.getItem(key);
       } catch {
-        return fallback;
+        /* ignore */
       }
+      if (fromLs != null && fromLs !== '') {
+        if (COOKIE_KEYS.has(key)) writeCookie(cookieName(key), fromLs);
+        return fromLs;
+      }
+      if (COOKIE_KEYS.has(key)) {
+        const fromCookie = readCookie(cookieName(key));
+        if (fromCookie != null && fromCookie !== '') {
+          try {
+            localStorage.setItem(key, fromCookie);
+          } catch {
+            /* ignore */
+          }
+          return fromCookie;
+        }
+      }
+      return fallback;
     },
     set(key, value) {
       try {
@@ -39,6 +95,7 @@
       } catch {
         /* ignore quota */
       }
+      if (COOKIE_KEYS.has(key)) writeCookie(cookieName(key), value);
     },
     remove(key) {
       try {
@@ -46,6 +103,7 @@
       } catch {
         /* ignore */
       }
+      if (COOKIE_KEYS.has(key)) clearCookie(cookieName(key));
     },
   };
 
@@ -69,6 +127,11 @@
   let useCanvasBg = true;
   let reloadTimer = null;
   let wakeLockTimer = null;
+
+  // Re-persist identity immediately on boot (heals missing localStorage or cookie)
+  if (deviceId) store.set('deviceId', deviceId);
+  if (pairingCode) store.set('pairingCode', pairingCode);
+  if (deviceName) store.set('deviceName', deviceName);
 
   function setVisible(el, visible) {
     if (!el) return;
@@ -657,6 +720,7 @@
   }
 
   function resetPairing() {
+    // Only explicit Reset clears identity — never the 60s reload / wake-lock refresh
     deviceId = null;
     pairingCode = null;
     deviceName = null;
@@ -746,8 +810,9 @@
     pre.textContent = [
       'H&W Signage Web Player',
       `Device ID: ${deviceId || '(not registered)'}`,
-      `Pairing code: ${pairingCode || '—'}`,
+      `Pairing code: ${pairingCode || store.get('lastPairingCode') || '—'}`,
       `App version: ${APP_VERSION}`,
+      `Persist: localStorage+cookie`,
       `Server: ${location.origin}`,
       `Signage version: ${contentVersion}`,
       `Mode: ${playMode} (${playlistItems.length} item(s), index ${playlistIndex})`,
@@ -822,6 +887,8 @@
 
   async function boot() {
     setVisible(debugPanel, false);
+    // If we already have a deviceId (localStorage or cookie), stay registered —
+    // do not request a new pairing code or wipe identity on reload.
     updateChrome();
     await restoreCache();
     startLoops();

@@ -8,17 +8,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.join(__dirname, '..');
 
 // Railway: mount a volume at /data and set DATA_DIR=/data so DB + uploads persist.
-const dataRoot = process.env.DATA_DIR
+// Without DATA_DIR + a volume, every deploy/restart wipes devices, media, and settings.
+const dataDir = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : rootDir;
-const dbDir = path.join(dataRoot, 'database');
-const uploadsDir = path.join(dataRoot, 'uploads');
+const usingPersistentVolume = Boolean(process.env.DATA_DIR);
+const dbDir = path.join(dataDir, 'database');
+const uploadsDir = path.join(dataDir, 'uploads');
 
 fs.mkdirSync(dbDir, { recursive: true });
 fs.mkdirSync(uploadsDir, { recursive: true });
 
 const dbPath = path.join(dbDir, 'signage.db');
 const db = new Database(dbPath);
+
+console.log(`[hw-signage] DATA_DIR=${process.env.DATA_DIR || '(unset)'}`);
+console.log(`[hw-signage] dataDir=${dataDir}`);
+console.log(`[hw-signage] dbPath=${dbPath}`);
+console.log(
+  `[hw-signage] persistence=${usingPersistentVolume ? 'volume (DATA_DIR set)' : 'EPHEMERAL — set DATA_DIR=/data and mount a Railway volume at /data'}`
+);
 
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
@@ -175,4 +184,4 @@ export function initDatabase() {
   return db;
 }
 
-export { db, uploadsDir, rootDir, dbPath };
+export { db, uploadsDir, rootDir, dbPath, dataDir, usingPersistentVolume };

@@ -5,7 +5,15 @@ import session from 'express-session';
 import path from 'path';
 import fs from 'fs';
 import { createRequire } from 'module';
-import { initDatabase, db, uploadsDir, rootDir } from './db.js';
+import {
+  initDatabase,
+  db,
+  uploadsDir,
+  rootDir,
+  dbPath,
+  dataDir,
+  usingPersistentVolume,
+} from './db.js';
 import authRoutes from './routes/auth.js';
 import mediaRoutes from './routes/media.js';
 import screenRoutes from './routes/screen.js';
@@ -66,7 +74,25 @@ app.use(
 app.use('/uploads', express.static(uploadsDir));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'hw-signage' });
+  let devicesTotal = 0;
+  let devicesRegistered = 0;
+  try {
+    devicesTotal = db.prepare('SELECT COUNT(*) AS c FROM devices').get().c;
+    devicesRegistered = db
+      .prepare(`SELECT COUNT(*) AS c FROM devices WHERE status = 'registered'`)
+      .get().c;
+  } catch (err) {
+    console.warn('[hw-signage] health device count failed', err.message);
+  }
+  res.json({
+    ok: true,
+    service: 'hw-signage',
+    dataDir,
+    dbPath,
+    dataDirEnv: process.env.DATA_DIR || null,
+    usingPersistentVolume,
+    devices: { total: devicesTotal, registered: devicesRegistered },
+  });
 });
 
 app.use('/api/auth', authRoutes);
@@ -109,6 +135,12 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`H&W Signage server listening on http://0.0.0.0:${PORT}`);
+  console.log(`Database: ${dbPath}`);
   console.log(`Uploads: ${uploadsDir}`);
   console.log(`Admin dist: ${adminDist} (${fs.existsSync(adminDist) ? 'found' : 'missing'})`);
+  if (isProd && !usingPersistentVolume) {
+    console.warn(
+      '[hw-signage] WARNING: DATA_DIR is not set. Screens, media, and settings will be wiped on every Railway restart/deploy. Mount a volume at /data and set DATA_DIR=/data.'
+    );
+  }
 });

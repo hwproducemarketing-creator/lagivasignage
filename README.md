@@ -83,16 +83,22 @@ Create a GitHub repo and push `F:\lagivasignage` (or connect Railway to the loca
 
 ### 3. Add a persistent volume (required)
 
-Without a volume, uploads and the database reset on every deploy.
+Without a volume, **registered screens, media, and settings reset on every deploy/restart**.
 
-1. Open your Railway service → **Settings** → **Volumes** (or click **+ Volume**)
-2. Mount path: `/data`
+1. Open your Railway service → **Settings** → **Volumes** → **+ Volume**
+2. Mount path: `/data` (must match `DATA_DIR`)
 3. In **Variables**, set:
 
 ```text
 DATA_DIR=/data
 ```
 
+4. Redeploy, then open `/api/health` and confirm:
+
+- `usingPersistentVolume: true`
+- `dbPath: "/data/database/signage.db"`
+
+If those are wrong, Screens will empty after every Railway restart.
 ### 4. Set environment variables
 
 In Railway → **Variables**:
@@ -123,7 +129,8 @@ Visit your Railway URL in a browser (phone or computer):
 - Login with `ADMIN_USERNAME` / `ADMIN_PASSWORD`
 - Upload → Publish
 
-Health check: `https://YOUR-APP.up.railway.app/api/health`
+Health check: `https://YOUR-APP.up.railway.app/api/health`  
+(includes `dbPath`, `dataDir`, `usingPersistentVolume`, and device counts — no secrets)
 
 ### 7. Point the Fire TV app at Railway
 
