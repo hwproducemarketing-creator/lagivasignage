@@ -1,0 +1,9 @@
+{
+  "name": "H&W Produce Signage",
+  "short_name": "H&W Signage",
+  "start_url": "./",
+  "display": "fullscreen",
+  "background_color": "#000000",
+  "theme_color": "#1B5E3B",
+  "description": "H&W Produce digital signage web player"
+}

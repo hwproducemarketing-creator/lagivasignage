@@ -1,30 +1,50 @@
 # Deploy checklist for Railway + Fire TV (store)
 
-## A. Deploy server (once)
+Production URL:
+https://lagivasignage-production.up.railway.app
 
-1. Push code to GitHub
-2. Railway → New Project → Deploy from GitHub
-3. Add Volume mount `/data`
-4. Variables:
+## A. Railway settings
+
+1. Volume mount: `/data`
+2. Variables:
    - NODE_ENV=production
    - DATA_DIR=/data
    - SESSION_SECRET=...
    - ADMIN_USERNAME=admin
    - ADMIN_PASSWORD=...
-   - CORS_ORIGIN=https://YOUR-APP.up.railway.app
-5. Generate public domain
-6. Open URL → login → upload → publish
+   - CORS_ORIGIN=https://lagivasignage-production.up.railway.app
+3. Admin: https://lagivasignage-production.up.railway.app
+4. Health: https://lagivasignage-production.up.railway.app/api/health
 
-## B. Build Fire TV APK (once per SERVER_URL change)
+## B. TV display options
 
-1. firetv/local.properties:
-   SERVER_URL=https://YOUR-APP.up.railway.app
-2. Android Studio → Build APK
-3. adb install on Fire Stick (any Wi‑Fi with internet)
-4. Pair device code in admin Screens page
+### Option 1 — Web player (recommended for Vega OS / browser TVs)
 
-## C. Day-to-day at the store
+Open on the TV browser (or bookmark / home screen shortcut):
 
-- Phone browser → Railway admin URL → upload/publish
-- No laptop required
-- Fire Stick only needs internet to the Railway URL
+**https://lagivasignage-production.up.railway.app/player**
+
+1. TV shows a device code (`XXXX-XXXX`)
+2. Phone admin → Screens → Add Screen → enter code
+3. Publish content → TV updates automatically
+4. Tap once for fullscreen; tap 3× for debug
+
+Works with store Wi‑Fi. No APK required.
+
+### Option 2 — Android / Fire OS APK
+
+`firetv/local.properties`:
+
+```properties
+SERVER_URL=https://lagivasignage-production.up.railway.app
+```
+
+1. Open `firetv/` in Android Studio
+2. Build → Build APK(s)
+3. `adb install -r app-debug.apk`
+4. Pair device code in admin → Screens → Add Screen
+
+## C. Day-to-day
+
+Phone → https://lagivasignage-production.up.railway.app → upload/publish  
+No laptop required.

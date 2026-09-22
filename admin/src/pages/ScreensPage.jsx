@@ -67,11 +67,21 @@ export default function ScreensPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="font-display text-2xl font-semibold text-hw-dark">Screens</h2>
-          <p className="text-sm text-hw-muted">Register and monitor Fire TV devices</p>
+          <p className="text-sm text-hw-muted">Register and monitor Fire TV / web player devices</p>
         </div>
-        <button type="button" className="btn-primary" onClick={() => setShowAdd(true)}>
-          Add Screen
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <a
+            className="btn-secondary"
+            href="/player"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open web player
+          </a>
+          <button type="button" className="btn-primary" onClick={() => setShowAdd(true)}>
+            Add Screen
+          </button>
+        </div>
       </div>
 
       {devices.length === 0 ? (

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#000000" />
+    <title>H&W Produce Signage</title>
+    <link rel="stylesheet" href="./player.css" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+  </head>
+  <body>
+    <div id="root">
+      <img id="imageView" alt="" hidden />
+      <video id="videoView" playsinline muted loop autoplay hidden></video>
+
+      <div id="waitingPanel" class="panel">
+        <h1>H&W PRODUCE</h1>
+        <p id="waitingText">Waiting for signage…</p>
+      </div>
+
+      <div id="pairingPanel" class="panel" hidden>
+        <h1>H&W PRODUCE</h1>
+        <p class="sub">DIGITAL SIGNAGE</p>
+        <p class="label">DEVICE CODE</p>
+        <p id="pairingCode" class="code">---- ----</p>
+        <p class="hint">
+          Open the admin dashboard → Screens → Add Screen<br />
+          Enter this code to register this display.
+        </p>
+      </div>
+
+      <div id="debugPanel" class="debug" hidden>
+        <pre id="debugText"></pre>
+        <p class="hint">Tap 3× anywhere or press Escape to close</p>
+      </div>
+    </div>
+    <script src="./player.js"></script>
+  </body>
+</html>

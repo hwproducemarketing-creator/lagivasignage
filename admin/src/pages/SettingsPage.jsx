@@ -85,19 +85,32 @@ export default function SettingsPage() {
           />
         </div>
         <div>
-          <label className="label">Server URL (for Fire TV)</label>
+          <label className="label">Server URL (for Fire TV / web player)</label>
           <input
             className="input bg-gray-50"
             value={
               typeof window !== 'undefined' && !window.location.origin.includes('5173')
                 ? window.location.origin
-                : 'http://YOUR_LAN_IP:4000 or https://YOUR-APP.up.railway.app'
+                : 'http://YOUR_LAN_IP:4000 or https://lagivasignage-production.up.railway.app'
             }
             readOnly
           />
           <p className="mt-1 text-xs text-hw-muted">
-            Put this exact URL in Fire TV <code>local.properties</code> as{' '}
-            <code>SERVER_URL</code>, then rebuild the APK.
+            Web player (Vega OS / browser):{' '}
+            <a
+              className="text-hw-dark underline"
+              href={
+                typeof window !== 'undefined' && !window.location.origin.includes('5173')
+                  ? `${window.location.origin}/player`
+                  : 'https://lagivasignage-production.up.railway.app/player'
+              }
+              target="_blank"
+              rel="noreferrer"
+            >
+              {typeof window !== 'undefined' && !window.location.origin.includes('5173')
+                ? `${window.location.origin}/player`
+                : 'https://lagivasignage-production.up.railway.app/player'}
+            </a>
           </p>
         </div>
         <div>

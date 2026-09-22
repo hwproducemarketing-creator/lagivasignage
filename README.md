@@ -201,7 +201,21 @@ Admin (session required):
 - `GET/PUT /api/settings`
 - `GET /api/activity`
 
-## Fire TV app
+## Web player (Vega OS / browser — no APK)
+
+Fullscreen signage in any TV browser:
+
+**https://lagivasignage-production.up.railway.app/player**
+
+- Shows pairing code → register under Admin → Screens
+- Polls every 10s, heartbeat every 30s
+- Caches media offline in the browser
+- Images + looping muted video
+- Tap once for fullscreen; tap 3× for debug
+
+Local: `http://localhost:4000/player` (with server running)
+
+## Fire TV / Android APK
 
 ### Configure server URL
 
@@ -210,7 +224,7 @@ Admin (session required):
 
 **Railway (store — recommended):**
 ```properties
-SERVER_URL=https://YOUR-APP.up.railway.app
+SERVER_URL=https://lagivasignage-production.up.railway.app
 ```
 
 **Local Wi‑Fi test only:**

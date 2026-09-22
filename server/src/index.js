@@ -78,11 +78,22 @@ app.use('/api/schedules', schedulesRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/activity', activityRoutes);
 
+// Web signage player (Vega OS / Fire TV browser / any TV browser)
+const playerDir = path.join(rootDir, 'public', 'player');
+app.use('/player', express.static(playerDir, { index: 'index.html' }));
+app.get(['/player', '/player/'], (_req, res) => {
+  res.sendFile(path.join(playerDir, 'index.html'));
+});
+
 const adminDist = path.join(rootDir, '..', 'admin', 'dist');
 if (fs.existsSync(adminDist)) {
   app.use(express.static(adminDist));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) {
+    if (
+      req.path.startsWith('/api') ||
+      req.path.startsWith('/uploads') ||
+      req.path.startsWith('/player')
+    ) {
       return next();
     }
     res.sendFile(path.join(adminDist, 'index.html'));
