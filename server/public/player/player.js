@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.5.1-web';
+  const APP_VERSION = '1.5.2-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -967,20 +967,61 @@
   }
 
   let pairingFetchPromise = null;
+  let refreshingPairing = null;
+  let pairingCheckGen = 0;
+  /** Codes that returned 404/unknown — never poll them again */
+  const discardedPairingCodes = new Set();
+
+  function markCodeDiscarded(code) {
+    const formatted = formatPairCode(code);
+    if (formatted) discardedPairingCodes.add(formatted);
+    if (code) discardedPairingCodes.add(String(code).toUpperCase());
+  }
+
+  function isDiscardedCode(code) {
+    const formatted = formatPairCode(code);
+    if (formatted && discardedPairingCodes.has(formatted)) return true;
+    if (code && discardedPairingCodes.has(String(code).toUpperCase())) return true;
+    return false;
+  }
+
+  /**
+   * Drop deleted/unknown identity and fetch ONE new DEVICE CODE.
+   * Serialized so overlapping 404s cannot wipe a fresh code or re-poll the dead one.
+   */
+  async function beginFreshPairing(reason) {
+    if (refreshingPairing) return refreshingPairing;
+    refreshingPairing = (async () => {
+      console.warn('[hw-signage] fresh pairing:', reason);
+      if (pairingCode) markCodeDiscarded(pairingCode);
+      if (lastPairingCode) markCodeDiscarded(lastPairingCode);
+      pairingCheckGen += 1;
+      clearLocalIdentity();
+      updateChrome();
+      await ensurePairingCode({ force: true });
+    })().finally(() => {
+      refreshingPairing = null;
+    });
+    return refreshingPairing;
+  }
 
   /**
    * Kiosk (no mouse): always ensure a XXXX-XXXX DEVICE CODE is on the strip.
-   * If pairingCode is missing, auto-clear stale deviceId and fetch a fresh code — no tap/Reset.
+   * If pairingCode is missing/discarded, fetch a fresh code — no tap/Reset.
    */
-  async function ensurePairingCode() {
-    if (formatPairCode(pairingCode)) {
+  async function ensurePairingCode(options = {}) {
+    const force = !!options.force;
+    if (!force && formatPairCode(pairingCode) && !isDiscardedCode(pairingCode)) {
       updateChrome();
       return;
+    }
+    if (isDiscardedCode(pairingCode)) {
+      pairingCode = null;
+      store.remove('pairingCode');
     }
     if (pairingFetchPromise) return pairingFetchPromise;
 
     pairingFetchPromise = (async () => {
-      // pairingCode missing — cannot show a usable Add Screen code yet
       if (deviceId || lastPairingCode || deviceName) {
         clearLocalIdentity();
       }
@@ -990,7 +1031,11 @@
           method: 'POST',
           body: '{}',
         });
-        pairingCode = data.pairingCode;
+        const next = data.pairingCode;
+        if (!next || isDiscardedCode(next)) {
+          throw new Error('server returned unusable pairing code');
+        }
+        pairingCode = next;
         store.set('pairingCode', pairingCode);
         networkOk = true;
         updateChrome();
@@ -1008,17 +1053,33 @@
   }
 
   async function checkPairing() {
-    if (!formatPairCode(pairingCode)) {
-      await ensurePairingCode();
+    if (refreshingPairing) return;
+
+    if (!formatPairCode(pairingCode) || isDiscardedCode(pairingCode)) {
+      await beginFreshPairing('missing-or-discarded-code');
       return;
     }
     if (isRegistered()) {
       updateChrome();
       return;
     }
+
+    const codeAtStart = formatPairCode(pairingCode);
+    const gen = ++pairingCheckGen;
     try {
-      const data = await jsonFetch(`/api/devices/pairing-status/${encodeURIComponent(pairingCode)}`);
+      const data = await jsonFetch(
+        `/api/devices/pairing-status/${encodeURIComponent(codeAtStart)}`
+      );
+      // Stale response after a fresh-pairing swap — ignore
+      if (gen !== pairingCheckGen || isDiscardedCode(codeAtStart)) return;
+      if (formatPairCode(pairingCode) !== codeAtStart) return;
+
       networkOk = true;
+      if (data.status === 'unknown') {
+        markCodeDiscarded(codeAtStart);
+        await beginFreshPairing('status-unknown');
+        return;
+      }
       if (data.status === 'registered' && data.deviceId) {
         deviceId = data.deviceId;
         store.set('deviceId', deviceId);
@@ -1026,7 +1087,6 @@
           deviceName = data.name;
           store.set('deviceName', deviceName);
         }
-        // Keep pairingCode so reloads still show XXXX-XXXX (never wipe to deviceId-only)
         lastPairingCode = pairingCode;
         store.set('lastPairingCode', pairingCode);
         store.set('pairingCode', pairingCode);
@@ -1038,12 +1098,18 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'pairing-status');
-      // Unknown/expired code → auto-fetch a fresh DEVICE CODE (no tap)
-      if (err.status === 404 || err.status === 400) {
-        clearLocalIdentity();
-        await ensurePairingCode();
+      const dead =
+        err.status === 404 ||
+        err.status === 400 ||
+        err.data?.status === 'unknown';
+      if (dead) {
+        markCodeDiscarded(codeAtStart);
+        // Only rotate if we are still on the dead code (ignore late 404s after refresh)
+        if (formatPairCode(pairingCode) === codeAtStart || !pairingCode) {
+          await beginFreshPairing('status-404');
+        }
       } else if (!pairingCode) {
-        await ensurePairingCode();
+        await beginFreshPairing('status-error-empty');
       } else {
         updateChrome();
       }
@@ -1052,6 +1118,7 @@
 
   async function sendHeartbeat() {
     if (!isRegistered()) return;
+    if (refreshingPairing) return;
     try {
       await jsonFetch('/api/screen/heartbeat', {
         method: 'POST',
@@ -1066,19 +1133,18 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'heartbeat');
-      // Server lost this device (e.g. ephemeral DB) — auto get a fresh DEVICE CODE
-      if (err.status === 404) {
-        clearLocalIdentity();
-        await ensurePairingCode();
+      // Screen deleted / unknown device — stop heartbeats and get a new DEVICE CODE
+      if (err.status === 404 || err.data?.error === 'Device not registered') {
+        if (pairingCode) markCodeDiscarded(pairingCode);
+        await beginFreshPairing('heartbeat-404');
       }
     }
   }
 
   function resetPairing() {
     // Debug-panel only — kiosk never requires this for a visible code
-    clearLocalIdentity();
-    updateChrome();
-    ensurePairingCode();
+    if (pairingCode) markCodeDiscarded(pairingCode);
+    beginFreshPairing('manual-reset');
   }
 
   let pollTimer = null;
