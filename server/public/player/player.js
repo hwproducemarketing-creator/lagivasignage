@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.5.2-web';
+  const APP_VERSION = '1.5.3-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -14,6 +14,7 @@
   /** ~400 days — Pi Chromium often clears localStorage more aggressively than cookies */
   const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 400;
   const COOKIE_KEYS = new Set(['deviceId', 'pairingCode', 'deviceName', 'lastPairingCode']);
+  const DEAD_CODES_KEY = 'hw_dead_pairing_codes';
 
   const imageView = document.getElementById('imageView');
   const videoView = document.getElementById('videoView');
@@ -59,10 +60,23 @@
   }
 
   function clearCookie(name) {
-    try {
-      document.cookie = `${encodeURIComponent(name)}=; path=/; max-age=0; SameSite=Lax`;
-    } catch {
-      /* ignore */
+    // Clear every common variant — Pi Chromium is picky about cookie clearing
+    const variants = [
+      name,
+      encodeURIComponent(name),
+      decodeURIComponent(name),
+    ];
+    const paths = ['/', '/player', '/player/'];
+    for (const n of variants) {
+      for (const p of paths) {
+        try {
+          document.cookie = `${n}=; path=${p}; max-age=0; SameSite=Lax`;
+          document.cookie = `${n}=; path=${p}; max-age=0`;
+          document.cookie = `${n}=; path=${p}; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax`;
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -141,6 +155,63 @@
   let downloadChain = Promise.resolve();
   let activeDownloads = 0;
 
+  /** Codes that 404'd / were deleted — never poll pairing-status for these again */
+  const deadCodes = new Set();
+  try {
+    const raw = sessionStorage.getItem(DEAD_CODES_KEY);
+    if (raw) {
+      JSON.parse(raw).forEach((c) => {
+        if (c) deadCodes.add(String(c).toUpperCase());
+      });
+    }
+  } catch {
+    /* ignore */
+  }
+
+  function persistDeadCodes() {
+    try {
+      sessionStorage.setItem(DEAD_CODES_KEY, JSON.stringify([...deadCodes]));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function normalizeCodeKey(code) {
+    if (!code) return null;
+    const alnum = String(code).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (alnum.length >= 8) {
+      return `${alnum.slice(0, 4)}-${alnum.slice(4, 8)}`;
+    }
+    return String(code).toUpperCase().trim();
+  }
+
+  function markDeadCode(code) {
+    const key = normalizeCodeKey(code);
+    if (!key) return;
+    deadCodes.add(key);
+    const bare = key.replace(/[^A-Z0-9]/g, '');
+    if (bare) deadCodes.add(bare);
+    persistDeadCodes();
+  }
+
+  function isDeadCode(code) {
+    const key = normalizeCodeKey(code);
+    if (!key) return false;
+    if (deadCodes.has(key)) return true;
+    const bare = key.replace(/[^A-Z0-9]/g, '');
+    return !!(bare && deadCodes.has(bare));
+  }
+
+  // Drop permanently-dead codes restored from cookie/localStorage on boot
+  if (isDeadCode(pairingCode)) {
+    pairingCode = null;
+    store.remove('pairingCode');
+  }
+  if (isDeadCode(lastPairingCode)) {
+    lastPairingCode = null;
+    store.remove('lastPairingCode');
+  }
+
   // Re-persist identity immediately on boot (heals missing localStorage or cookie)
   if (deviceId) store.set('deviceId', deviceId);
   if (pairingCode) store.set('pairingCode', pairingCode);
@@ -158,7 +229,11 @@
   }
 
   function displayPairCode() {
-    return formatPairCode(pairingCode || lastPairingCode);
+    const primary = formatPairCode(pairingCode);
+    if (primary && !isDeadCode(primary)) return primary;
+    const fallback = formatPairCode(lastPairingCode);
+    if (fallback && !isDeadCode(fallback)) return fallback;
+    return null;
   }
 
   function setVisible(el, visible) {
@@ -194,7 +269,7 @@
     }
     if (!res.ok) {
       const err = new Error(data?.error || `HTTP ${res.status}`);
-      err.status = res.status;
+      err.status = Number(res.status);
       err.data = data;
       throw err;
     }
@@ -964,75 +1039,114 @@
     store.remove('pairingCode');
     store.remove('deviceName');
     store.remove('lastPairingCode');
+    clearCookie(cookieName('deviceId'));
+    clearCookie(cookieName('pairingCode'));
+    clearCookie(cookieName('deviceName'));
+    clearCookie(cookieName('lastPairingCode'));
+    clearCookie('hw_deviceId');
+    clearCookie('hw_pairingCode');
+    clearCookie('hw_deviceName');
+    clearCookie('hw_lastPairingCode');
   }
 
   let pairingFetchPromise = null;
   let refreshingPairing = null;
   let pairingCheckGen = 0;
-  /** Codes that returned 404/unknown — never poll them again */
-  const discardedPairingCodes = new Set();
+  let pairTimer = null;
+  let pollTimer = null;
+  let hbTimer = null;
 
-  function markCodeDiscarded(code) {
-    const formatted = formatPairCode(code);
-    if (formatted) discardedPairingCodes.add(formatted);
-    if (code) discardedPairingCodes.add(String(code).toUpperCase());
+  function stopPairTimer() {
+    if (pairTimer) {
+      clearInterval(pairTimer);
+      pairTimer = null;
+    }
   }
 
-  function isDiscardedCode(code) {
-    const formatted = formatPairCode(code);
-    if (formatted && discardedPairingCodes.has(formatted)) return true;
-    if (code && discardedPairingCodes.has(String(code).toUpperCase())) return true;
-    return false;
+  function startPairTimer() {
+    stopPairTimer();
+    pairTimer = setInterval(() => {
+      checkPairing().catch((err) => noteError(err, 'pairTimer'));
+    }, PAIRING_MS);
+  }
+
+  function isGoneStatus(err) {
+    const status = Number(err && err.status);
+    const bodyStatus = err && err.data && err.data.status;
+    return (
+      status === 404 ||
+      status === 410 ||
+      status === 400 ||
+      bodyStatus === 'unknown' ||
+      bodyStatus === 'gone'
+    );
   }
 
   /**
-   * Drop deleted/unknown identity and fetch ONE new DEVICE CODE.
-   * Serialized so overlapping 404s cannot wipe a fresh code or re-poll the dead one.
+   * Screen deleted / code unknown: stop polling that code forever, clear identity,
+   * fetch exactly one new DEVICE CODE, then resume polling.
    */
   async function beginFreshPairing(reason) {
     if (refreshingPairing) return refreshingPairing;
     refreshingPairing = (async () => {
-      console.warn('[hw-signage] fresh pairing:', reason);
-      if (pairingCode) markCodeDiscarded(pairingCode);
-      if (lastPairingCode) markCodeDiscarded(lastPairingCode);
+      console.warn('[hw-signage] fresh pairing:', reason, 'old=', pairingCode);
+      stopPairTimer();
       pairingCheckGen += 1;
+
+      if (pairingCode) markDeadCode(pairingCode);
+      if (lastPairingCode) markDeadCode(lastPairingCode);
+
       clearLocalIdentity();
+      if (codeRailCode) codeRailCode.textContent = 'Getting…';
       updateChrome();
+
       await ensurePairingCode({ force: true });
+      startPairTimer();
+      updateChrome();
     })().finally(() => {
       refreshingPairing = null;
     });
     return refreshingPairing;
   }
 
-  /**
-   * Kiosk (no mouse): always ensure a XXXX-XXXX DEVICE CODE is on the strip.
-   * If pairingCode is missing/discarded, fetch a fresh code — no tap/Reset.
-   */
   async function ensurePairingCode(options = {}) {
     const force = !!options.force;
-    if (!force && formatPairCode(pairingCode) && !isDiscardedCode(pairingCode)) {
-      updateChrome();
-      return;
-    }
-    if (isDiscardedCode(pairingCode)) {
+
+    if (pairingCode && isDeadCode(pairingCode)) {
       pairingCode = null;
       store.remove('pairingCode');
+    }
+    if (lastPairingCode && isDeadCode(lastPairingCode)) {
+      lastPairingCode = null;
+      store.remove('lastPairingCode');
+    }
+
+    if (!force && formatPairCode(pairingCode) && !isDeadCode(pairingCode)) {
+      updateChrome();
+      return;
     }
     if (pairingFetchPromise) return pairingFetchPromise;
 
     pairingFetchPromise = (async () => {
-      if (deviceId || lastPairingCode || deviceName) {
-        clearLocalIdentity();
+      if (force || deviceId || lastPairingCode || deviceName) {
+        deviceId = null;
+        deviceName = null;
+        lastPairingCode = null;
+        store.remove('deviceId');
+        store.remove('deviceName');
+        store.remove('lastPairingCode');
       }
+      pairingCode = null;
+      store.remove('pairingCode');
       updateChrome();
+
       try {
         const data = await jsonFetch('/api/devices/pairing-code', {
           method: 'POST',
           body: '{}',
         });
         const next = data.pairingCode;
-        if (!next || isDiscardedCode(next)) {
+        if (!next || isDeadCode(next)) {
           throw new Error('server returned unusable pairing code');
         }
         pairingCode = next;
@@ -1055,8 +1169,12 @@
   async function checkPairing() {
     if (refreshingPairing) return;
 
-    if (!formatPairCode(pairingCode) || isDiscardedCode(pairingCode)) {
-      await beginFreshPairing('missing-or-discarded-code');
+    if (pairingCode && isDeadCode(pairingCode)) {
+      await beginFreshPairing('dead-code-blocked');
+      return;
+    }
+    if (!formatPairCode(pairingCode)) {
+      await beginFreshPairing('no-pairing-code');
       return;
     }
     if (isRegistered()) {
@@ -1065,19 +1183,26 @@
     }
 
     const codeAtStart = formatPairCode(pairingCode);
+    if (!codeAtStart || isDeadCode(codeAtStart)) {
+      await beginFreshPairing('invalid-code');
+      return;
+    }
+
     const gen = ++pairingCheckGen;
     try {
       const data = await jsonFetch(
-        `/api/devices/pairing-status/${encodeURIComponent(codeAtStart)}`
+        '/api/devices/pairing-status/' + encodeURIComponent(codeAtStart)
       );
-      // Stale response after a fresh-pairing swap — ignore
-      if (gen !== pairingCheckGen || isDiscardedCode(codeAtStart)) return;
+      if (gen !== pairingCheckGen) return;
+      if (isDeadCode(codeAtStart)) return;
       if (formatPairCode(pairingCode) !== codeAtStart) return;
 
       networkOk = true;
-      if (data.status === 'unknown') {
-        markCodeDiscarded(codeAtStart);
-        await beginFreshPairing('status-unknown');
+      if (data.status === 'unknown' || data.status === 'gone') {
+        markDeadCode(codeAtStart);
+        pairingCode = null;
+        store.remove('pairingCode');
+        await beginFreshPairing('status-' + data.status);
         return;
       }
       if (data.status === 'registered' && data.deviceId) {
@@ -1098,16 +1223,15 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'pairing-status');
-      const dead =
-        err.status === 404 ||
-        err.status === 400 ||
-        err.data?.status === 'unknown';
-      if (dead) {
-        markCodeDiscarded(codeAtStart);
-        // Only rotate if we are still on the dead code (ignore late 404s after refresh)
-        if (formatPairCode(pairingCode) === codeAtStart || !pairingCode) {
-          await beginFreshPairing('status-404');
+      if (isGoneStatus(err)) {
+        markDeadCode(codeAtStart);
+        if (formatPairCode(pairingCode) === codeAtStart) {
+          pairingCode = null;
+          lastPairingCode = null;
+          store.remove('pairingCode');
+          store.remove('lastPairingCode');
         }
+        await beginFreshPairing('status-' + (err.status || 'gone'));
       } else if (!pairingCode) {
         await beginFreshPairing('status-error-empty');
       } else {
@@ -1133,44 +1257,39 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'heartbeat');
-      // Screen deleted / unknown device — stop heartbeats and get a new DEVICE CODE
-      if (err.status === 404 || err.data?.error === 'Device not registered') {
-        if (pairingCode) markCodeDiscarded(pairingCode);
-        await beginFreshPairing('heartbeat-404');
+      if (isGoneStatus(err) || (err.data && err.data.error === 'Device not registered')) {
+        if (pairingCode) markDeadCode(pairingCode);
+        deviceId = null;
+        store.remove('deviceId');
+        await beginFreshPairing('heartbeat-gone');
       }
     }
   }
 
   function resetPairing() {
-    // Debug-panel only — kiosk never requires this for a visible code
-    if (pairingCode) markCodeDiscarded(pairingCode);
+    if (pairingCode) markDeadCode(pairingCode);
     beginFreshPairing('manual-reset');
   }
-
-  let pollTimer = null;
-  let hbTimer = null;
-  let pairTimer = null;
 
   function clearTimers() {
     if (pollTimer) clearInterval(pollTimer);
     if (hbTimer) clearInterval(hbTimer);
-    if (pairTimer) clearInterval(pairTimer);
+    stopPairTimer();
     if (wakeLockTimer) clearInterval(wakeLockTimer);
     stopSlideTimer();
-    pollTimer = hbTimer = pairTimer = wakeLockTimer = null;
+    pollTimer = hbTimer = wakeLockTimer = null;
   }
 
   function startLoops() {
     clearTimers();
     updateChrome();
-    // Always ensure DEVICE CODE is on the strip (no mouse / no Reset)
     ensurePairingCode();
     pollOnce();
     sendHeartbeat();
     requestWakeLock();
     pollTimer = setInterval(pollOnce, POLL_MS);
     hbTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
-    pairTimer = setInterval(checkPairing, PAIRING_MS);
+    startPairTimer();
     wakeLockTimer = setInterval(() => {
       requestWakeLock();
     }, WAKE_LOCK_MS);

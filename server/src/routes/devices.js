@@ -68,9 +68,10 @@ router.get('/pairing-status/:code', (req, res) => {
   const device = db.prepare('SELECT * FROM devices WHERE pairing_code = ?').get(code);
 
   if (!device) {
-    return res.status(404).json({
+    console.warn('[hw-signage] pairing-status gone for code', code);
+    return res.status(410).json({
       error: 'Unknown pairing code',
-      status: 'unknown',
+      status: 'gone',
     });
   }
 

@@ -129,8 +129,26 @@ app.use('/api/playlists', playlistsRoutes);
 
 // Web signage player (Vega OS / Fire TV browser / any TV browser)
 const playerDir = path.join(rootDir, 'public', 'player');
-app.use('/player', express.static(playerDir, { index: 'index.html' }));
+app.use(
+  '/player',
+  express.static(playerDir, {
+    index: 'index.html',
+    etag: false,
+    lastModified: false,
+    setHeaders(res, filePath) {
+      // Always revalidate player assets so Pi kiosks pick up pairing fixes
+      if (/\.(js|css|html|webmanifest)$/i.test(filePath)) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    },
+  })
+);
 app.get(['/player', '/player/'], (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(playerDir, 'index.html'));
 });
 
