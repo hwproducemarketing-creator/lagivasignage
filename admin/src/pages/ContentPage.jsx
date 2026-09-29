@@ -192,8 +192,8 @@ export default function ContentPage() {
             onChange={(e) => pickFile(e.target.files?.[0])}
           />
           <p className="mt-3 text-xs text-hw-muted">
-            Supported: JPG PNG WEBP MP4 (max 100 MB). On slow store Wi‑Fi, large videos can take several
-            minutes — prefer 720p, ~2–5 Mbps, under ~40 MB.
+            Tip for ~15 Mbps store Wi‑Fi: keep videos ≤720p and a few minutes long so the TV can
+            download once, then play smoothly with no buffering.
           </p>
         </div>
 

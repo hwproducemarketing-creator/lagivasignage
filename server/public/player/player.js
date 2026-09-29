@@ -1,12 +1,16 @@
 (() => {
-  const APP_VERSION = '1.5.0-web';
+  const APP_VERSION = '1.5.1-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const WAKE_LOCK_MS = 30_000;
-  const CACHE_NAME = 'hw-signage-media-v2';
+  const CACHE_NAME = 'hw-signage-media-v3';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
+  /** One-at-a-time downloads so 15 Mbps Wi‑Fi isn't contested */
+  const DOWNLOAD_CONCURRENCY = 1;
+  /** Give large MP4s time to finish before starting with partial set */
+  const PRELOAD_TIMEOUT_MS = 12 * 60 * 1000;
   /** ~400 days — Pi Chromium often clears localStorage more aggressively than cookies */
   const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 400;
   const COOKIE_KEYS = new Set(['deviceId', 'pairingCode', 'deviceName', 'lastPairingCode']);
@@ -132,6 +136,10 @@
   const downloadBackoffUntil = new Map();
   let applyingContent = false;
   let advanceGeneration = 0;
+  let isPreloading = false;
+  let pendingVersionJob = 0;
+  let downloadChain = Promise.resolve();
+  let activeDownloads = 0;
 
   // Re-persist identity immediately on boot (heals missing localStorage or cookie)
   if (deviceId) store.set('deviceId', deviceId);
@@ -229,23 +237,39 @@
   function updateChrome() {
     updateCodeRail();
     if (!isRegistered()) {
-      // Code rail is the primary pairing UI for kiosk (no mouse)
       setVisible(waitingPanel, false);
+      return;
+    }
+    if (isPreloading && !mediaIsVisible()) {
+      setVisible(waitingPanel, true);
       return;
     }
     if (!mediaIsVisible()) {
       setVisible(waitingPanel, true);
-      if (waitingText) waitingText.textContent = 'Waiting for signage…';
+      if (waitingText && !isPreloading) waitingText.textContent = 'Waiting for signage…';
     } else {
       setVisible(waitingPanel, false);
     }
   }
 
-  function showWaiting(msg) {
-    if (isRegistered() && !mediaIsVisible()) {
-      setVisible(waitingPanel, true);
-      if (msg) waitingText.textContent = msg;
+  function showWaiting(msg, { force = false } = {}) {
+    if (!isRegistered()) return;
+    if (!force && mediaIsVisible()) {
+      updateCodeRail();
+      return;
     }
+    setVisible(waitingPanel, true);
+    if (msg && waitingText) waitingText.textContent = msg;
+    updateCodeRail();
+  }
+
+  function showLoadingProgress(done, total) {
+    if (!isRegistered()) return;
+    // Never cover playing cached content during a background version update
+    if (mediaIsVisible()) return;
+    isPreloading = true;
+    setVisible(waitingPanel, true);
+    if (waitingText) waitingText.textContent = `Loading signage… ${done}/${total}`;
     updateCodeRail();
   }
 
@@ -386,12 +410,17 @@
   }
 
   function displayMedia(url, type, options = {}) {
+    // Strict: never play from remote /uploads — only fully-downloaded blob: URLs
+    if (!url || !String(url).startsWith('blob:')) {
+      noteError(new Error('refused non-blob playback URL'), 'displayMedia');
+      return;
+    }
     const loop = options.loop !== false;
     updateCodeRail();
     if (isRegistered()) setVisible(waitingPanel, false);
+    isPreloading = false;
 
     if (cachedObjectUrl && cachedObjectUrl !== url && cachedObjectUrl.startsWith('blob:')) {
-      // Don't revoke URLs still held in mediaMemory
       let stillUsed = false;
       for (const entry of mediaMemory.values()) {
         if (entry.objectUrl === cachedObjectUrl) {
@@ -452,7 +481,7 @@
       };
       imageView.onerror = () => {
         noteError(new Error('image failed to load'), 'image');
-        if (url.startsWith('blob:')) showingMedia = false;
+        showingMedia = false;
       };
     }
   }
@@ -463,6 +492,10 @@
 
   function cacheRequestForUrl(url) {
     return new Request(`${location.origin}/__signage__/media?u=${encodeURIComponent(url)}`);
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   async function cachePutUrl(url, type, blob) {
@@ -494,13 +527,15 @@
     const keys = await cache.keys();
     const ours = keys.filter((r) => r.url.includes('/__signage__/media'));
     if (!ours.length) {
-      // Migrate: try legacy single-slot cache
-      const legacy = keys.filter((r) => r.url.includes('/__cached__/'));
+      const legacy = keys.filter(
+        (r) => r.url.includes('/__cached__/') || r.url.includes('/__signage__/')
+      );
       if (!legacy.length) return null;
       legacy.sort((a, b) => a.url.localeCompare(b.url));
       const res = await cache.match(legacy[legacy.length - 1]);
       if (!res) return null;
       const blob = await res.blob();
+      if (!blob || blob.size <= 0) return null;
       const type =
         res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
       return { blob, type, objectUrl: URL.createObjectURL(blob) };
@@ -508,36 +543,71 @@
     const res = await cache.match(ours[ours.length - 1]);
     if (!res) return null;
     const blob = await res.blob();
+    if (!blob || blob.size <= 0) return null;
     const type =
       res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
     return { blob, type, objectUrl: URL.createObjectURL(blob) };
   }
 
-  function clearMediaMemory() {
-    for (const entry of mediaMemory.values()) {
+  function clearMediaMemory(map = mediaMemory) {
+    for (const entry of map.values()) {
       try {
         URL.revokeObjectURL(entry.objectUrl);
       } catch {
         /* ignore */
       }
     }
-    mediaMemory.clear();
+    map.clear();
+  }
+
+  /** Full-file download into ArrayBuffer — never stream partial content into <video>. */
+  async function downloadCompleteBlob(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`download HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    if (!buf || buf.byteLength <= 0) throw new Error('empty download');
+    const ctype = res.headers.get('Content-Type') || 'application/octet-stream';
+    return new Blob([buf], { type: ctype });
+  }
+
+  function enqueueDownload(task) {
+    const run = downloadChain.then(async () => {
+      while (activeDownloads >= DOWNLOAD_CONCURRENCY) {
+        await sleep(50);
+      }
+      activeDownloads += 1;
+      try {
+        return await task();
+      } finally {
+        activeDownloads -= 1;
+      }
+    });
+    downloadChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   /**
-   * Resolve media from memory → Cache API → network (with backoff).
-   * Never re-downloads a URL already in memory/cache until version change clears memory
-   * (Cache API still serves without network).
+   * Memory → Cache API → full network download (with backoff).
+   * Playback callers must use allowNetwork:false so Wi‑Fi never touches <video>/<img>.
    */
-  async function resolveItemMedia(item, { allowNetwork = true } = {}) {
+  async function resolveItemMedia(item, { allowNetwork = true, memoryMap = mediaMemory } = {}) {
     const url = absoluteMediaUrl(item.url);
-    const mem = mediaMemory.get(url);
-    if (mem) return { url, objectUrl: mem.objectUrl, type: mem.type || item.type, source: 'memory' };
+    const mem = memoryMap.get(url);
+    if (mem?.objectUrl?.startsWith('blob:')) {
+      return { url, objectUrl: mem.objectUrl, type: mem.type || item.type, source: 'memory' };
+    }
 
     try {
       const hit = await cacheGetUrl(url);
-      if (hit) {
-        mediaMemory.set(url, { objectUrl: hit.objectUrl, type: hit.type || item.type, blob: hit.blob });
+      if (hit?.objectUrl?.startsWith('blob:')) {
+        memoryMap.set(url, {
+          objectUrl: hit.objectUrl,
+          type: hit.type || item.type,
+          blob: hit.blob,
+        });
         return { url, objectUrl: hit.objectUrl, type: hit.type || item.type, source: 'cache' };
       }
     } catch (err) {
@@ -549,40 +619,88 @@
     const until = downloadBackoffUntil.get(url) || 0;
     if (Date.now() < until) return null;
 
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`download HTTP ${res.status}`);
-      const blob = await res.blob();
-      if (!blob || blob.size <= 0) throw new Error('empty download');
-      const objectUrl = URL.createObjectURL(blob);
-      mediaMemory.set(url, { objectUrl, type: item.type, blob });
-      downloadBackoffUntil.delete(url);
-      try {
-        await cachePutUrl(url, item.type, blob);
-      } catch (err) {
-        noteError(err, 'cachePutUrl');
+    return enqueueDownload(async () => {
+      const again = memoryMap.get(url);
+      if (again?.objectUrl?.startsWith('blob:')) {
+        return { url, objectUrl: again.objectUrl, type: again.type || item.type, source: 'memory' };
       }
-      return { url, objectUrl, type: item.type, source: 'network' };
-    } catch (err) {
-      noteError(err, 'resolveItemMedia');
-      const prev = downloadBackoffUntil.get(url);
-      const delay = prev && Date.now() < prev + 120_000 ? 120_000 : 20_000;
-      downloadBackoffUntil.set(url, Date.now() + delay);
-      return null;
-    }
+      try {
+        const cached = await cacheGetUrl(url);
+        if (cached?.objectUrl?.startsWith('blob:')) {
+          memoryMap.set(url, {
+            objectUrl: cached.objectUrl,
+            type: cached.type || item.type,
+            blob: cached.blob,
+          });
+          return {
+            url,
+            objectUrl: cached.objectUrl,
+            type: cached.type || item.type,
+            source: 'cache',
+          };
+        }
+      } catch {
+        /* continue to network */
+      }
+
+      try {
+        const blob = await downloadCompleteBlob(url);
+        const objectUrl = URL.createObjectURL(blob);
+        memoryMap.set(url, { objectUrl, type: item.type, blob });
+        downloadBackoffUntil.delete(url);
+        try {
+          await cachePutUrl(url, item.type, blob);
+        } catch (err) {
+          noteError(err, 'cachePutUrl');
+        }
+        return { url, objectUrl, type: item.type, source: 'network' };
+      } catch (err) {
+        noteError(err, 'resolveItemMedia');
+        const prev = downloadBackoffUntil.get(url);
+        const delay = prev && Date.now() < prev + 120_000 ? 120_000 : 15_000;
+        downloadBackoffUntil.set(url, Date.now() + delay);
+        return null;
+      }
+    });
   }
 
-  /** Sequential preload so slow Wi‑Fi isn't flooded with parallel MP4s. */
-  async function preloadItems(items, { network = true } = {}) {
+  /** Download every item fully (sequential). Updates progress for first-load UI. */
+  async function preloadAllItems(
+    items,
+    { memoryMap = mediaMemory, onProgress, timeoutMs = PRELOAD_TIMEOUT_MS } = {}
+  ) {
+    const total = items.length;
+    let ready = 0;
+    const started = Date.now();
+    if (onProgress) onProgress(0, total);
+
     for (const item of items) {
-      await resolveItemMedia(item, { allowNetwork: network });
+      if (Date.now() - started > timeoutMs) break;
+
+      let media = await resolveItemMedia(item, { allowNetwork: true, memoryMap });
+      for (let attempt = 0; !media && attempt < 3; attempt += 1) {
+        if (Date.now() - started > timeoutMs) break;
+        await sleep(Math.min(45_000, 4_000 * 2 ** attempt));
+        downloadBackoffUntil.delete(absoluteMediaUrl(item.url));
+        media = await resolveItemMedia(item, { allowNetwork: true, memoryMap });
+      }
+      if (media) ready += 1;
+      if (onProgress) onProgress(ready, total);
     }
+    return ready;
+  }
+
+  function itemsReadyFromMap(items, memoryMap) {
+    return items.filter((it) => {
+      const entry = memoryMap.get(absoluteMediaUrl(it.url));
+      return entry?.objectUrl?.startsWith('blob:');
+    });
   }
 
   async function restoreCache() {
     try {
       const hit = await cacheGetAny();
-      if (hit) {
+      if (hit?.objectUrl?.startsWith('blob:')) {
         displayMedia(hit.objectUrl, hit.type, { loop: true });
         return true;
       }
@@ -631,33 +749,28 @@
     }, ms);
   }
 
+  /** Play only from local blob cache — never fetch during rotation. */
   async function showPlaylistItem(index) {
     if (!playlistItems.length) return;
     const n = playlistItems.length;
     const isMulti = playMode === 'playlist' || n > 1;
     let idx = ((index % n) + n) % n;
 
-    // Prefer ready media; skip items still downloading (don't stall forever on one video)
     let media = null;
     for (let tried = 0; tried < n; tried += 1) {
       const candidate = playlistItems[idx];
-      media = await resolveItemMedia(candidate, { allowNetwork: tried === 0 });
-      if (media) break;
+      media = await resolveItemMedia(candidate, { allowNetwork: false });
+      if (media?.objectUrl?.startsWith('blob:')) break;
+      media = null;
       if (!isMulti) break;
       idx = (idx + 1) % n;
-    }
-
-    // If nothing cached yet, try network for originally requested index once more
-    if (!media) {
-      media = await resolveItemMedia(playlistItems[((index % n) + n) % n], { allowNetwork: true });
-      if (media) idx = ((index % n) + n) % n;
     }
 
     if (!media) {
       updateChrome();
       if (isMulti) {
         stopSlideTimer();
-        slideTimer = setTimeout(() => showPlaylistItem(playlistIndex + 1), 8_000);
+        slideTimer = setTimeout(() => showPlaylistItem(playlistIndex + 1), 5_000);
       }
       return;
     }
@@ -670,29 +783,48 @@
     displayMedia(media.objectUrl, media.type || item.type, { loop: !isMulti });
     updateChrome();
     scheduleAdvance(item, isMulti);
+  }
 
-    // Background: ensure next item is warm (and rest of playlist eventually)
-    if (isMulti) {
-      const next = playlistItems[(playlistIndex + 1) % n];
-      resolveItemMedia(next, { allowNetwork: true }).catch(() => {});
+  function normalizeItems(current) {
+    if (Array.isArray(current.items) && current.items.length) return current.items;
+    if (current.url) {
+      return [
+        {
+          type: current.type,
+          url: current.url,
+          durationSec: current.durationSec ?? null,
+          filename: current.filename,
+        },
+      ];
     }
+    return [];
+  }
+
+  function activatePlaylist(items, version, startIndex) {
+    const ready = itemsReadyFromMap(items, mediaMemory);
+    if (!ready.length) return false;
+
+    // Prefer full published list when everything cached; otherwise only ready blobs
+    playlistItems = ready.length === items.length ? items : ready;
+    playMode = playlistItems.length > 1 ? 'playlist' : 'single';
+    let idx = startIndex;
+    if (idx < 0 || idx >= playlistItems.length) idx = 0;
+    if (ready.length !== items.length) {
+      const want = absoluteMediaUrl(items[Math.min(startIndex, items.length - 1)].url);
+      const found = playlistItems.findIndex((it) => absoluteMediaUrl(it.url) === want);
+      idx = found >= 0 ? found : 0;
+    }
+
+    playlistIndex = idx;
+    contentVersion = version;
+    store.set('contentVersion', String(contentVersion));
+    store.set('playlistIndex', String(idx));
+    store.set('lastUpdate', new Date().toISOString());
+    return true;
   }
 
   async function applyCurrentPayload(current) {
-    const items =
-      Array.isArray(current.items) && current.items.length
-        ? current.items
-        : current.url
-          ? [
-              {
-                type: current.type,
-                url: current.url,
-                durationSec: current.durationSec ?? null,
-                filename: current.filename,
-              },
-            ]
-          : [];
-
+    const items = normalizeItems(current);
     if (!items.length) {
       stopSlideTimer();
       playlistItems = [];
@@ -703,8 +835,7 @@
 
     const nextVersion = Number(current.version);
     const versionChanged = nextVersion !== contentVersion;
-    playMode = current.mode === 'playlist' || items.length > 1 ? 'playlist' : 'single';
-    playlistItems = items;
+    const playing = mediaIsVisible();
 
     const savedVersion = Number(store.get('contentVersion', '-1'));
     const savedIndex = Number(store.get('playlistIndex', '0'));
@@ -718,30 +849,73 @@
       startIndex = savedIndex;
     }
 
-    if (versionChanged) {
-      clearMediaMemory();
-      downloadBackoffUntil.clear();
-      if (!mediaIsVisible()) showWaiting('Loading signage…');
-      // First item ASAP on slow Wi‑Fi; rest warm in background
-      await resolveItemMedia(items[startIndex], { allowNetwork: true });
-      const nextIdx = (startIndex + 1) % items.length;
-      if (items.length > 1) {
-        resolveItemMedia(items[nextIdx], { allowNetwork: true }).catch(() => {});
-      }
-    } else {
-      // Warm cache from disk without forcing network
-      await preloadItems(items, { network: false });
+    // Same version already playing from cache — nothing to do
+    if (!versionChanged && playing && playlistItems.length) {
+      updateChrome();
+      return;
     }
 
-    playlistIndex = startIndex;
-    contentVersion = nextVersion;
-    store.set('contentVersion', String(contentVersion));
-    store.set('playlistIndex', String(startIndex));
-    store.set('lastUpdate', new Date().toISOString());
-    await showPlaylistItem(startIndex);
+    // --- Version change while already playing: download in background, keep old content ---
+    if (versionChanged && playing) {
+      const jobId = ++pendingVersionJob;
+      const staging = new Map();
+      await preloadAllItems(items, {
+        memoryMap: staging,
+        timeoutMs: PRELOAD_TIMEOUT_MS,
+      });
+      if (jobId !== pendingVersionJob) {
+        clearMediaMemory(staging);
+        return;
+      }
 
-    // Keep downloading the rest in background if not all ready
-    preloadItems(items, { network: true }).catch(() => {});
+      const readyCount = itemsReadyFromMap(items, staging).length;
+      if (readyCount === 0) {
+        clearMediaMemory(staging);
+        // Keep old version on screen; poll will retry later
+        noteError(new Error('new version download failed; keeping previous'), 'version-swap');
+        return;
+      }
+
+      // Atomic swap to new blobs only
+      clearMediaMemory(mediaMemory);
+      for (const [k, v] of staging) mediaMemory.set(k, v);
+      staging.clear();
+      downloadBackoffUntil.clear();
+
+      if (!activatePlaylist(items, nextVersion, startIndex)) return;
+      isPreloading = false;
+      await showPlaylistItem(playlistIndex);
+      updateChrome();
+      return;
+    }
+
+    // --- First load / nothing on screen: wait for full cache with progress ---
+    isPreloading = true;
+    showLoadingProgress(0, items.length);
+    if (versionChanged) {
+      clearMediaMemory(mediaMemory);
+      downloadBackoffUntil.clear();
+    }
+
+    await preloadAllItems(items, {
+      memoryMap: mediaMemory,
+      onProgress: (done, total) => showLoadingProgress(done, total),
+      timeoutMs: PRELOAD_TIMEOUT_MS,
+    });
+
+    if (!activatePlaylist(items, nextVersion, startIndex)) {
+      isPreloading = true;
+      showWaiting('Loading signage… (retrying)', { force: true });
+      setTimeout(() => {
+        contentVersion = -1;
+        pollOnce();
+      }, 20_000);
+      return;
+    }
+
+    isPreloading = false;
+    await showPlaylistItem(playlistIndex);
+    updateChrome();
   }
 
   async function pollOnce() {
@@ -763,7 +937,6 @@
 
       const sameVersion = current.version === contentVersion;
       if (sameVersion && mediaIsVisible() && playlistItems.length) {
-        // Metadata poll only — never re-download blobs when version unchanged
         updateChrome();
         return;
       }
