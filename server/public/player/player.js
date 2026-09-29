@@ -1,10 +1,10 @@
 (() => {
-  const APP_VERSION = '1.5.3-web';
+  const APP_VERSION = '1.6.0-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const WAKE_LOCK_MS = 30_000;
-  const CACHE_NAME = 'hw-signage-media-v3';
+  const CACHE_NAME = 'hw-signage-media-v4';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
   /** One-at-a-time downloads so 15 Mbps Wi‑Fi isn't contested */
@@ -15,6 +15,8 @@
   const COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 400;
   const COOKIE_KEYS = new Set(['deviceId', 'pairingCode', 'deviceName', 'lastPairingCode']);
   const DEAD_CODES_KEY = 'hw_dead_pairing_codes';
+  /** Offline playlist metadata — media blobs live in Cache API */
+  const SNAPSHOT_KEY = 'hw_playlist_snapshot';
 
   const imageView = document.getElementById('imageView');
   const videoView = document.getElementById('videoView');
@@ -291,6 +293,10 @@
     return imgOk || vidOk;
   }
 
+  function isOnline() {
+    return typeof navigator === 'undefined' || navigator.onLine !== false;
+  }
+
   /** Always-visible side rail: DEVICE CODE = XXXX-XXXX. Zero interaction required. */
   function updateCodeRail() {
     document.body.classList.add('has-code-rail');
@@ -300,9 +306,21 @@
     codeRail.classList.add('code-rail--setup');
     codeRail.classList.remove('code-rail--live', 'code-rail--id-only');
     if (codeRailLabel) codeRailLabel.textContent = 'DEVICE CODE';
-    if (codeRailCode) codeRailCode.textContent = pair || 'Getting…';
-    if (codeRailHint) {
-      codeRailHint.textContent = 'Phone → Screens → Add Screen → enter this code';
+    if (pair) {
+      if (codeRailCode) codeRailCode.textContent = pair;
+      if (codeRailHint) {
+        codeRailHint.textContent = isOnline()
+          ? 'Phone → Screens → Add Screen → enter this code'
+          : 'Offline — using last device code';
+      }
+    } else if (!isOnline()) {
+      if (codeRailCode) codeRailCode.textContent = 'Offline';
+      if (codeRailHint) codeRailHint.textContent = 'Waiting for network…';
+    } else {
+      if (codeRailCode) codeRailCode.textContent = 'Getting…';
+      if (codeRailHint) {
+        codeRailHint.textContent = 'Phone → Screens → Add Screen → enter this code';
+      }
     }
     if (codeRailSub) {
       codeRailSub.textContent = isRegistered() && deviceName ? deviceName : '';
@@ -772,17 +790,78 @@
     });
   }
 
-  async function restoreCache() {
+  function savePlaylistSnapshot(items, version, mode) {
+    if (!items || !items.length) return;
+    const snapshot = {
+      version: Number(version) || 0,
+      mode: mode || (items.length > 1 ? 'playlist' : 'single'),
+      savedAt: new Date().toISOString(),
+      items: items.map((it) => ({
+        url: it.url,
+        type: it.type,
+        durationSec: it.durationSec ?? null,
+        filename: it.filename || null,
+        cacheKey: absoluteMediaUrl(it.url),
+      })),
+    };
     try {
+      store.set(SNAPSHOT_KEY, JSON.stringify(snapshot));
+    } catch (err) {
+      noteError(err, 'savePlaylistSnapshot');
+    }
+  }
+
+  function loadPlaylistSnapshot() {
+    try {
+      const raw = store.get(SNAPSHOT_KEY);
+      if (!raw) return null;
+      const snap = JSON.parse(raw);
+      if (!snap || !Array.isArray(snap.items) || !snap.items.length) return null;
+      return snap;
+    } catch {
+      return null;
+    }
+  }
+
+  async function hydrateItemsFromCache(items) {
+    let ready = 0;
+    for (const item of items) {
+      const media = await resolveItemMedia(item, { allowNetwork: false });
+      if (media?.objectUrl?.startsWith('blob:')) ready += 1;
+    }
+    return ready;
+  }
+
+  /** Boot / offline: restore last playlist + blobs without network. */
+  async function restoreOfflinePlaylist() {
+    try {
+      const snap = loadPlaylistSnapshot();
+      if (snap) {
+        const ready = await hydrateItemsFromCache(snap.items);
+        if (ready > 0) {
+          const savedIndex = Number(store.get('playlistIndex', '0')) || 0;
+          if (activatePlaylist(snap.items, Number(snap.version) || 0, savedIndex)) {
+            await showPlaylistItem(playlistIndex);
+            updateChrome();
+            return true;
+          }
+        }
+      }
+      // Fallback: any single cached media file
       const hit = await cacheGetAny();
       if (hit?.objectUrl?.startsWith('blob:')) {
         displayMedia(hit.objectUrl, hit.type, { loop: true });
+        updateChrome();
         return true;
       }
     } catch (err) {
-      noteError(err, 'restoreCache');
+      noteError(err, 'restoreOfflinePlaylist');
     }
     return false;
+  }
+
+  async function restoreCache() {
+    return restoreOfflinePlaylist();
   }
 
   function stopSlideTimer() {
@@ -895,12 +974,19 @@
     store.set('contentVersion', String(contentVersion));
     store.set('playlistIndex', String(idx));
     store.set('lastUpdate', new Date().toISOString());
+    // Persist playlist order/durations for offline reboot
+    savePlaylistSnapshot(playlistItems, version, playMode);
     return true;
   }
 
   async function applyCurrentPayload(current) {
     const items = normalizeItems(current);
     if (!items.length) {
+      // Empty publish: keep offline cached playlist if we have one
+      if (mediaIsVisible() && playlistItems.length) {
+        updateChrome();
+        return;
+      }
       stopSlideTimer();
       playlistItems = [];
       if (!mediaIsVisible()) showWaiting('Waiting for signage…');
@@ -926,6 +1012,7 @@
 
     // Same version already playing from cache — nothing to do
     if (!versionChanged && playing && playlistItems.length) {
+      savePlaylistSnapshot(playlistItems, contentVersion, playMode);
       updateChrome();
       return;
     }
@@ -946,12 +1033,10 @@
       const readyCount = itemsReadyFromMap(items, staging).length;
       if (readyCount === 0) {
         clearMediaMemory(staging);
-        // Keep old version on screen; poll will retry later
         noteError(new Error('new version download failed; keeping previous'), 'version-swap');
         return;
       }
 
-      // Atomic swap to new blobs only
       clearMediaMemory(mediaMemory);
       for (const [k, v] of staging) mediaMemory.set(k, v);
       staging.clear();
@@ -979,12 +1064,17 @@
     });
 
     if (!activatePlaylist(items, nextVersion, startIndex)) {
-      isPreloading = true;
-      showWaiting('Loading signage… (retrying)', { force: true });
-      setTimeout(() => {
-        contentVersion = -1;
-        pollOnce();
-      }, 20_000);
+      // Fall back to any previously cached offline playlist
+      isPreloading = false;
+      const restored = await restoreOfflinePlaylist();
+      if (!restored) {
+        isPreloading = true;
+        showWaiting('Loading signage… (retrying)', { force: true });
+        setTimeout(() => {
+          contentVersion = -1;
+          pollOnce();
+        }, 20_000);
+      }
       return;
     }
 
@@ -995,6 +1085,12 @@
 
   async function pollOnce() {
     if (applyingContent) return;
+    if (!isOnline()) {
+      networkOk = false;
+      if (!mediaIsVisible()) await restoreOfflinePlaylist();
+      updateChrome();
+      return;
+    }
     try {
       const current = await jsonFetch('/api/screen/current');
       networkOk = true;
@@ -1004,6 +1100,10 @@
         (current.url && current.type);
 
       if (!hasContent) {
+        if (mediaIsVisible() && playlistItems.length) {
+          updateChrome();
+          return;
+        }
         stopSlideTimer();
         if (!mediaIsVisible()) showWaiting('Waiting for signage…');
         updateChrome();
@@ -1026,6 +1126,8 @@
     } catch (err) {
       networkOk = false;
       noteError(err, 'poll');
+      // Stay on local cached playlist — no error UI
+      if (!mediaIsVisible()) await restoreOfflinePlaylist();
       updateChrome();
     }
   }
@@ -1087,6 +1189,10 @@
    * fetch exactly one new DEVICE CODE, then resume polling.
    */
   async function beginFreshPairing(reason) {
+    if (!isOnline()) {
+      updateChrome();
+      return;
+    }
     if (refreshingPairing) return refreshingPairing;
     refreshingPairing = (async () => {
       console.warn('[hw-signage] fresh pairing:', reason, 'old=', pairingCode);
@@ -1111,6 +1217,12 @@
 
   async function ensurePairingCode(options = {}) {
     const force = !!options.force;
+
+    // Offline: never wipe pairing or hammer the API — keep showing last code / content
+    if (!isOnline()) {
+      updateChrome();
+      return;
+    }
 
     if (pairingCode && isDeadCode(pairingCode)) {
       pairingCode = null;
@@ -1156,7 +1268,7 @@
       } catch (err) {
         networkOk = false;
         noteError(err, 'pairing-code');
-        if (codeRailCode) codeRailCode.textContent = 'Retrying…';
+        if (codeRailCode && !mediaIsVisible()) codeRailCode.textContent = 'Retrying…';
         updateChrome();
       }
     })().finally(() => {
@@ -1168,6 +1280,10 @@
 
   async function checkPairing() {
     if (refreshingPairing) return;
+    if (!isOnline()) {
+      updateChrome();
+      return;
+    }
 
     if (pairingCode && isDeadCode(pairingCode)) {
       await beginFreshPairing('dead-code-blocked');
@@ -1243,6 +1359,7 @@
   async function sendHeartbeat() {
     if (!isRegistered()) return;
     if (refreshingPairing) return;
+    if (!isOnline()) return;
     try {
       await jsonFetch('/api/screen/heartbeat', {
         method: 'POST',
@@ -1397,18 +1514,42 @@
     if (document.visibilityState === 'visible') {
       requestWakeLock();
       pollOnce();
-      ensurePairingCode();
+      if (isOnline()) ensurePairingCode();
     }
+  });
+
+  window.addEventListener('online', () => {
+    networkOk = true;
+    updateChrome();
+    pollOnce();
+    ensurePairingCode();
+  });
+
+  window.addEventListener('offline', () => {
+    networkOk = false;
+    updateChrome();
   });
 
   async function boot() {
     setVisible(debugPanel, false);
     updateChrome();
-    // Immediately surface DEVICE CODE; fetch if missing — never wait for tap
-    await ensurePairingCode();
-    await restoreCache();
+
+    // Offline-first: start cached playlist immediately (no network wait)
+    await restoreOfflinePlaylist();
+
+    // Pairing / sync in parallel — never wipe cache when offline
+    if (isOnline()) {
+      ensurePairingCode().catch(() => {});
+    } else {
+      updateChrome();
+    }
+
     startLoops();
     requestWakeLock();
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch((err) => noteError(err, 'sw'));
+    }
   }
 
   boot();

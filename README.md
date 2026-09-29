@@ -193,7 +193,9 @@ Compress videos **before** upload so TVs and phones finish faster:
 - Prefer shorter clips or playlists of smaller files over one huge 4K file
 - After first download, the web player caches media and will not re-download until you publish a new version
 
-Uploads and publishes can take several minutes on congested Wi‑Fi — wait for the progress bar; do not tap Upload twice.
+### Offline / store Wi‑Fi outage
+
+After the TV has loaded content once, videos stay on the device. If Wi‑Fi drops, the player keeps looping the last playlist — no buffering from the internet. When Wi‑Fi returns, it checks for new publishes and downloads them fully before switching.
 
 ## API (summary)
 
