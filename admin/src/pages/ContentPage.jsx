@@ -56,17 +56,45 @@ export default function ContentPage() {
   }
 
   async function upload() {
-    if (!selected) return;
+    if (!selected || uploading) return;
     setUploading(true);
-    setProgress(20);
+    setProgress(0);
     try {
       const fd = new FormData();
       fd.append('file', selected.file);
       if (selected.width) fd.append('width', String(selected.width));
       if (selected.height) fd.append('height', String(selected.height));
-      setProgress(60);
-      await api.upload(fd);
-      setProgress(100);
+
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/media/upload');
+        xhr.withCredentials = true;
+        xhr.timeout = 15 * 60 * 1000;
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setProgress(Math.max(1, Math.round((e.loaded / e.total) * 100)));
+          }
+        };
+        xhr.onload = () => {
+          let data = null;
+          try {
+            data = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+          } catch {
+            data = null;
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            setProgress(100);
+            resolve(data);
+          } else {
+            reject(new Error(data?.error || `Upload failed (${xhr.status})`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error — check Wi‑Fi and try again.'));
+        xhr.ontimeout = () =>
+          reject(new Error('Upload timed out. Compress the video (720p) or use a faster connection.'));
+        xhr.send(fd);
+      });
+
       push('Upload successful');
       setSelected(null);
       setPreview(null);
@@ -163,7 +191,10 @@ export default function ContentPage() {
             className="hidden"
             onChange={(e) => pickFile(e.target.files?.[0])}
           />
-          <p className="mt-3 text-xs text-hw-muted">Supported: JPG PNG WEBP MP4 (max 100 MB)</p>
+          <p className="mt-3 text-xs text-hw-muted">
+            Supported: JPG PNG WEBP MP4 (max 100 MB). On slow store Wi‑Fi, large videos can take several
+            minutes — prefer 720p, ~2–5 Mbps, under ~40 MB.
+          </p>
         </div>
 
         {selected && (
@@ -178,9 +209,19 @@ export default function ContentPage() {
               {formatBytes(selected.size)}
               {selected.width ? ` · ${selected.width}×${selected.height}` : ''}
             </p>
+            {selected.type === 'video' && selected.size > 40 * 1024 * 1024 && (
+              <p className="mt-2 text-xs text-amber-800">
+                Large file — upload may take several minutes on store Wi‑Fi. Do not tap Upload twice.
+              </p>
+            )}
             {uploading && (
-              <div className="mt-2 h-2 overflow-hidden rounded bg-gray-200">
-                <div className="h-full bg-hw-green transition-all" style={{ width: `${progress}%` }} />
+              <div className="mt-2">
+                <div className="h-2 overflow-hidden rounded bg-gray-200">
+                  <div className="h-full bg-hw-green transition-all" style={{ width: `${progress}%` }} />
+                </div>
+                <p className="mt-1 text-xs text-hw-muted">
+                  Uploading… {progress}% (please wait — do not close this page)
+                </p>
               </div>
             )}
             <div className="mt-3 flex flex-wrap gap-2">
@@ -190,6 +231,7 @@ export default function ContentPage() {
               <button
                 type="button"
                 className="btn-secondary"
+                disabled={uploading}
                 onClick={() => {
                   setSelected(null);
                   setPreview(null);

@@ -82,3 +82,9 @@ Phone → https://heroic-acceptance-production-433e.up.railway.app → upload/pu
 No laptop required.
 
 After Railway volume is mounted, registered screens stay in **Screens** across admin reloads and deploys.
+
+## D. Slow store Wi‑Fi
+
+1. Compress videos to **720p**, ~2–5 Mbps, under ~40 MB when possible.
+2. First publish downloads once to the Pi/TV; later polls only check version metadata.
+3. Large uploads may take several minutes — watch the admin progress bar; do not double-submit.

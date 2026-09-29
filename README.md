@@ -183,6 +183,18 @@ See [`.env.example`](.env.example):
 
 Online rule: last heartbeat younger than **90 seconds**.
 
+### Slow store Wi‑Fi tips
+
+Compress videos **before** upload so TVs and phones finish faster:
+
+- Resolution: **720p** (1280×720) is enough for most store screens
+- Bitrate: about **2–5 Mbps** H.264 MP4
+- Target size: ideally **under 40 MB** per clip (100 MB max still allowed)
+- Prefer shorter clips or playlists of smaller files over one huge 4K file
+- After first download, the web player caches media and will not re-download until you publish a new version
+
+Uploads and publishes can take several minutes on congested Wi‑Fi — wait for the progress bar; do not tap Upload twice.
+
 ## API (summary)
 
 Public (Fire TV):

@@ -1,10 +1,10 @@
 (() => {
-  const APP_VERSION = '1.4.3-web';
+  const APP_VERSION = '1.5.0-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const WAKE_LOCK_MS = 30_000;
-  const CACHE_NAME = 'hw-signage-media-v1';
+  const CACHE_NAME = 'hw-signage-media-v2';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
   /** ~400 days — Pi Chromium often clears localStorage more aggressively than cookies */
@@ -126,6 +126,12 @@
   let bgRaf = 0;
   let useCanvasBg = true;
   let wakeLockTimer = null;
+  /** absoluteUrl → { objectUrl, type, blob } — in-memory for current session */
+  const mediaMemory = new Map();
+  /** absoluteUrl → timestamp when retry is allowed */
+  const downloadBackoffUntil = new Map();
+  let applyingContent = false;
+  let advanceGeneration = 0;
 
   // Re-persist identity immediately on boot (heals missing localStorage or cookie)
   if (deviceId) store.set('deviceId', deviceId);
@@ -379,20 +385,26 @@
     }
   }
 
-  function displayMedia(url, type) {
-    // Side rail always shows code/id; never block content with a full-screen pairing panel
-    if (isRegistered()) {
-      setVisible(waitingPanel, false);
-    } else {
-      setVisible(waitingPanel, false);
-    }
+  function displayMedia(url, type, options = {}) {
+    const loop = options.loop !== false;
     updateCodeRail();
+    if (isRegistered()) setVisible(waitingPanel, false);
 
     if (cachedObjectUrl && cachedObjectUrl !== url && cachedObjectUrl.startsWith('blob:')) {
-      try {
-        URL.revokeObjectURL(cachedObjectUrl);
-      } catch {
-        /* ignore */
+      // Don't revoke URLs still held in mediaMemory
+      let stillUsed = false;
+      for (const entry of mediaMemory.values()) {
+        if (entry.objectUrl === cachedObjectUrl) {
+          stillUsed = true;
+          break;
+        }
+      }
+      if (!stillUsed) {
+        try {
+          URL.revokeObjectURL(cachedObjectUrl);
+        } catch {
+          /* ignore */
+        }
       }
     }
     cachedObjectUrl = url;
@@ -407,7 +419,7 @@
       videoView.muted = true;
       videoView.defaultMuted = true;
       videoView.volume = 0;
-      videoView.loop = true;
+      videoView.loop = loop;
       videoView.playsInline = true;
       videoView.setAttribute('playsinline', '');
       videoView.setAttribute('webkit-playsinline', '');
@@ -428,7 +440,6 @@
         }
       };
       videoView.play().catch((err) => noteError(err, 'video.play'));
-      // Kick background immediately (canvas waits for frames)
       syncBackground(url, 'video');
     } else {
       stopVideo();
@@ -446,56 +457,329 @@
     }
   }
 
-  async function cachePut(version, type, blob) {
+  function absoluteMediaUrl(url) {
+    return new URL(url, location.origin).href;
+  }
+
+  function cacheRequestForUrl(url) {
+    return new Request(`${location.origin}/__signage__/media?u=${encodeURIComponent(url)}`);
+  }
+
+  async function cachePutUrl(url, type, blob) {
     if (!('caches' in window)) return;
     const cache = await caches.open(CACHE_NAME);
-    const key = new Request(`${location.origin}/__cached__/v${version}`);
     const headers = new Headers({
       'Content-Type': type === 'video' ? 'video/mp4' : blob.type || 'image/jpeg',
       'X-Signage-Type': type,
-      'X-Signage-Version': String(version),
+      'X-Signage-Url': url,
     });
-    await cache.put(key, new Response(blob.slice(0), { headers }));
-    const keys = await cache.keys();
-    await Promise.all(
-      keys
-        .filter((r) => r.url.includes('/__cached__/') && !r.url.endsWith(`/v${version}`))
-        .map((r) => cache.delete(r))
-    );
+    await cache.put(cacheRequestForUrl(url), new Response(blob.slice(0), { headers }));
   }
 
-  async function cacheGetLatest() {
+  async function cacheGetUrl(url) {
+    if (!('caches' in window)) return null;
+    const cache = await caches.open(CACHE_NAME);
+    const res = await cache.match(cacheRequestForUrl(url));
+    if (!res) return null;
+    const blob = await res.blob();
+    if (!blob || blob.size <= 0) return null;
+    const type =
+      res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
+    return { blob, type, objectUrl: URL.createObjectURL(blob) };
+  }
+
+  async function cacheGetAny() {
     if (!('caches' in window)) return null;
     const cache = await caches.open(CACHE_NAME);
     const keys = await cache.keys();
-    const cached = keys.filter((r) => r.url.includes('/__cached__/'));
-    if (!cached.length) return null;
-    cached.sort((a, b) => a.url.localeCompare(b.url));
-    const req = cached[cached.length - 1];
-    const res = await cache.match(req);
+    const ours = keys.filter((r) => r.url.includes('/__signage__/media'));
+    if (!ours.length) {
+      // Migrate: try legacy single-slot cache
+      const legacy = keys.filter((r) => r.url.includes('/__cached__/'));
+      if (!legacy.length) return null;
+      legacy.sort((a, b) => a.url.localeCompare(b.url));
+      const res = await cache.match(legacy[legacy.length - 1]);
+      if (!res) return null;
+      const blob = await res.blob();
+      const type =
+        res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
+      return { blob, type, objectUrl: URL.createObjectURL(blob) };
+    }
+    const res = await cache.match(ours[ours.length - 1]);
     if (!res) return null;
     const blob = await res.blob();
     const type =
       res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
-    const version = Number(res.headers.get('X-Signage-Version') || '-1');
-    return { blob, type, version, objectUrl: URL.createObjectURL(blob) };
+    return { blob, type, objectUrl: URL.createObjectURL(blob) };
+  }
+
+  function clearMediaMemory() {
+    for (const entry of mediaMemory.values()) {
+      try {
+        URL.revokeObjectURL(entry.objectUrl);
+      } catch {
+        /* ignore */
+      }
+    }
+    mediaMemory.clear();
+  }
+
+  /**
+   * Resolve media from memory → Cache API → network (with backoff).
+   * Never re-downloads a URL already in memory/cache until version change clears memory
+   * (Cache API still serves without network).
+   */
+  async function resolveItemMedia(item, { allowNetwork = true } = {}) {
+    const url = absoluteMediaUrl(item.url);
+    const mem = mediaMemory.get(url);
+    if (mem) return { url, objectUrl: mem.objectUrl, type: mem.type || item.type, source: 'memory' };
+
+    try {
+      const hit = await cacheGetUrl(url);
+      if (hit) {
+        mediaMemory.set(url, { objectUrl: hit.objectUrl, type: hit.type || item.type, blob: hit.blob });
+        return { url, objectUrl: hit.objectUrl, type: hit.type || item.type, source: 'cache' };
+      }
+    } catch (err) {
+      noteError(err, 'cacheGetUrl');
+    }
+
+    if (!allowNetwork) return null;
+
+    const until = downloadBackoffUntil.get(url) || 0;
+    if (Date.now() < until) return null;
+
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`download HTTP ${res.status}`);
+      const blob = await res.blob();
+      if (!blob || blob.size <= 0) throw new Error('empty download');
+      const objectUrl = URL.createObjectURL(blob);
+      mediaMemory.set(url, { objectUrl, type: item.type, blob });
+      downloadBackoffUntil.delete(url);
+      try {
+        await cachePutUrl(url, item.type, blob);
+      } catch (err) {
+        noteError(err, 'cachePutUrl');
+      }
+      return { url, objectUrl, type: item.type, source: 'network' };
+    } catch (err) {
+      noteError(err, 'resolveItemMedia');
+      const prev = downloadBackoffUntil.get(url);
+      const delay = prev && Date.now() < prev + 120_000 ? 120_000 : 20_000;
+      downloadBackoffUntil.set(url, Date.now() + delay);
+      return null;
+    }
+  }
+
+  /** Sequential preload so slow Wi‑Fi isn't flooded with parallel MP4s. */
+  async function preloadItems(items, { network = true } = {}) {
+    for (const item of items) {
+      await resolveItemMedia(item, { allowNetwork: network });
+    }
   }
 
   async function restoreCache() {
     try {
-      const hit = await cacheGetLatest();
+      const hit = await cacheGetAny();
       if (hit) {
-        if (hit.version >= 0) {
-          contentVersion = hit.version;
-          store.set('contentVersion', String(contentVersion));
-        }
-        displayMedia(hit.objectUrl, hit.type);
+        displayMedia(hit.objectUrl, hit.type, { loop: true });
         return true;
       }
     } catch (err) {
       noteError(err, 'restoreCache');
     }
     return false;
+  }
+
+  function stopSlideTimer() {
+    if (slideTimer) {
+      clearTimeout(slideTimer);
+      slideTimer = null;
+    }
+  }
+
+  function itemDuration(item) {
+    if (item.durationSec != null && Number(item.durationSec) > 0) {
+      return Number(item.durationSec) * 1000;
+    }
+    return (item.type === 'video' ? DEFAULT_VIDEO_SEC : DEFAULT_IMAGE_SEC) * 1000;
+  }
+
+  function scheduleAdvance(item, isMulti) {
+    stopSlideTimer();
+    if (!isMulti) {
+      videoView.onended = null;
+      return;
+    }
+    const gen = ++advanceGeneration;
+    const ms = itemDuration(item);
+    if (item.type === 'video') {
+      videoView.onended = () => {
+        if (gen !== advanceGeneration) return;
+        videoView.onended = null;
+        stopSlideTimer();
+        showPlaylistItem(playlistIndex + 1);
+      };
+    } else {
+      videoView.onended = null;
+    }
+    slideTimer = setTimeout(() => {
+      if (gen !== advanceGeneration) return;
+      videoView.onended = null;
+      showPlaylistItem(playlistIndex + 1);
+    }, ms);
+  }
+
+  async function showPlaylistItem(index) {
+    if (!playlistItems.length) return;
+    const n = playlistItems.length;
+    const isMulti = playMode === 'playlist' || n > 1;
+    let idx = ((index % n) + n) % n;
+
+    // Prefer ready media; skip items still downloading (don't stall forever on one video)
+    let media = null;
+    for (let tried = 0; tried < n; tried += 1) {
+      const candidate = playlistItems[idx];
+      media = await resolveItemMedia(candidate, { allowNetwork: tried === 0 });
+      if (media) break;
+      if (!isMulti) break;
+      idx = (idx + 1) % n;
+    }
+
+    // If nothing cached yet, try network for originally requested index once more
+    if (!media) {
+      media = await resolveItemMedia(playlistItems[((index % n) + n) % n], { allowNetwork: true });
+      if (media) idx = ((index % n) + n) % n;
+    }
+
+    if (!media) {
+      updateChrome();
+      if (isMulti) {
+        stopSlideTimer();
+        slideTimer = setTimeout(() => showPlaylistItem(playlistIndex + 1), 8_000);
+      }
+      return;
+    }
+
+    playlistIndex = idx;
+    store.set('playlistIndex', String(playlistIndex));
+    store.set('playlistItemStartedAt', String(Date.now()));
+    const item = playlistItems[playlistIndex];
+
+    displayMedia(media.objectUrl, media.type || item.type, { loop: !isMulti });
+    updateChrome();
+    scheduleAdvance(item, isMulti);
+
+    // Background: ensure next item is warm (and rest of playlist eventually)
+    if (isMulti) {
+      const next = playlistItems[(playlistIndex + 1) % n];
+      resolveItemMedia(next, { allowNetwork: true }).catch(() => {});
+    }
+  }
+
+  async function applyCurrentPayload(current) {
+    const items =
+      Array.isArray(current.items) && current.items.length
+        ? current.items
+        : current.url
+          ? [
+              {
+                type: current.type,
+                url: current.url,
+                durationSec: current.durationSec ?? null,
+                filename: current.filename,
+              },
+            ]
+          : [];
+
+    if (!items.length) {
+      stopSlideTimer();
+      playlistItems = [];
+      if (!mediaIsVisible()) showWaiting('Waiting for signage…');
+      updateChrome();
+      return;
+    }
+
+    const nextVersion = Number(current.version);
+    const versionChanged = nextVersion !== contentVersion;
+    playMode = current.mode === 'playlist' || items.length > 1 ? 'playlist' : 'single';
+    playlistItems = items;
+
+    const savedVersion = Number(store.get('contentVersion', '-1'));
+    const savedIndex = Number(store.get('playlistIndex', '0'));
+    let startIndex = 0;
+    if (
+      nextVersion === savedVersion &&
+      Number.isFinite(savedIndex) &&
+      savedIndex >= 0 &&
+      savedIndex < items.length
+    ) {
+      startIndex = savedIndex;
+    }
+
+    if (versionChanged) {
+      clearMediaMemory();
+      downloadBackoffUntil.clear();
+      if (!mediaIsVisible()) showWaiting('Loading signage…');
+      // First item ASAP on slow Wi‑Fi; rest warm in background
+      await resolveItemMedia(items[startIndex], { allowNetwork: true });
+      const nextIdx = (startIndex + 1) % items.length;
+      if (items.length > 1) {
+        resolveItemMedia(items[nextIdx], { allowNetwork: true }).catch(() => {});
+      }
+    } else {
+      // Warm cache from disk without forcing network
+      await preloadItems(items, { network: false });
+    }
+
+    playlistIndex = startIndex;
+    contentVersion = nextVersion;
+    store.set('contentVersion', String(contentVersion));
+    store.set('playlistIndex', String(startIndex));
+    store.set('lastUpdate', new Date().toISOString());
+    await showPlaylistItem(startIndex);
+
+    // Keep downloading the rest in background if not all ready
+    preloadItems(items, { network: true }).catch(() => {});
+  }
+
+  async function pollOnce() {
+    if (applyingContent) return;
+    try {
+      const current = await jsonFetch('/api/screen/current');
+      networkOk = true;
+
+      const hasContent =
+        (Array.isArray(current.items) && current.items.length > 0) ||
+        (current.url && current.type);
+
+      if (!hasContent) {
+        stopSlideTimer();
+        if (!mediaIsVisible()) showWaiting('Waiting for signage…');
+        updateChrome();
+        return;
+      }
+
+      const sameVersion = current.version === contentVersion;
+      if (sameVersion && mediaIsVisible() && playlistItems.length) {
+        // Metadata poll only — never re-download blobs when version unchanged
+        updateChrome();
+        return;
+      }
+
+      applyingContent = true;
+      try {
+        await applyCurrentPayload(current);
+      } finally {
+        applyingContent = false;
+      }
+      updateChrome();
+    } catch (err) {
+      networkOk = false;
+      noteError(err, 'poll');
+      updateChrome();
+    }
   }
 
   function clearLocalIdentity() {
@@ -590,150 +874,6 @@
       } else {
         updateChrome();
       }
-    }
-  }
-
-  function stopSlideTimer() {
-    if (slideTimer) {
-      clearTimeout(slideTimer);
-      slideTimer = null;
-    }
-  }
-
-  function itemDuration(item) {
-    if (item.durationSec != null && Number(item.durationSec) > 0) {
-      return Number(item.durationSec) * 1000;
-    }
-    return (item.type === 'video' ? DEFAULT_VIDEO_SEC : DEFAULT_IMAGE_SEC) * 1000;
-  }
-
-  async function showPlaylistItem(index) {
-    if (!playlistItems.length) return;
-    playlistIndex = ((index % playlistItems.length) + playlistItems.length) % playlistItems.length;
-    store.set('playlistIndex', String(playlistIndex));
-    store.set('playlistItemStartedAt', String(Date.now()));
-    const item = playlistItems[playlistIndex];
-    const absoluteUrl = new URL(item.url, location.origin).href;
-
-    try {
-      const res = await fetch(absoluteUrl);
-      if (!res.ok) throw new Error(`download HTTP ${res.status}`);
-      const blob = await res.blob();
-      if (!blob || blob.size <= 0) throw new Error('empty download');
-      const objectUrl = URL.createObjectURL(blob);
-      displayMedia(objectUrl, item.type);
-      try {
-        await cachePut(`${contentVersion}-${playlistIndex}`, item.type, blob);
-      } catch (err) {
-        noteError(err, 'cachePut');
-      }
-    } catch (err) {
-      noteError(err, 'playlist-item');
-      displayMedia(absoluteUrl, item.type);
-    }
-
-    updateChrome();
-
-    const shouldRotate = playMode === 'playlist' || playlistItems.length > 1;
-    if (!shouldRotate) {
-      // Classic single publish: hold until version changes
-      stopSlideTimer();
-      videoView.onended = null;
-      return;
-    }
-
-    stopSlideTimer();
-    const ms = itemDuration(item);
-    if (item.type === 'video') {
-      videoView.onended = () => {
-        videoView.onended = null;
-        // If video ends before duration, wait remaining or advance
-        stopSlideTimer();
-        showPlaylistItem(playlistIndex + 1);
-      };
-    } else {
-      videoView.onended = null;
-    }
-    slideTimer = setTimeout(() => {
-      videoView.onended = null;
-      showPlaylistItem(playlistIndex + 1);
-    }, ms);
-  }
-
-  function applyCurrentPayload(current) {
-    const items =
-      Array.isArray(current.items) && current.items.length
-        ? current.items
-        : current.url
-          ? [
-              {
-                type: current.type,
-                url: current.url,
-                durationSec: current.durationSec ?? null,
-                filename: current.filename,
-              },
-            ]
-          : [];
-
-    if (!items.length) {
-      stopSlideTimer();
-      playlistItems = [];
-      if (!mediaIsVisible()) showWaiting('Waiting for signage…');
-      updateChrome();
-      return;
-    }
-
-    playMode = current.mode === 'playlist' || items.length > 1 ? 'playlist' : 'single';
-    playlistItems = items;
-
-    const savedVersion = Number(store.get('contentVersion', '-1'));
-    const savedIndex = Number(store.get('playlistIndex', '0'));
-    let startIndex = 0;
-    if (
-      Number(current.version) === savedVersion &&
-      Number.isFinite(savedIndex) &&
-      savedIndex >= 0 &&
-      savedIndex < items.length
-    ) {
-      startIndex = savedIndex;
-    }
-
-    playlistIndex = startIndex;
-    contentVersion = current.version;
-    store.set('contentVersion', String(contentVersion));
-    store.set('playlistIndex', String(startIndex));
-    store.set('lastUpdate', new Date().toISOString());
-    showPlaylistItem(startIndex);
-  }
-
-  async function pollOnce() {
-    try {
-      const current = await jsonFetch('/api/screen/current');
-      networkOk = true;
-
-      const hasContent =
-        (Array.isArray(current.items) && current.items.length > 0) ||
-        (current.url && current.type);
-
-      if (!hasContent) {
-        stopSlideTimer();
-        if (!mediaIsVisible()) showWaiting('Waiting for signage…');
-        updateChrome();
-        return;
-      }
-
-      const sameVersion = current.version === contentVersion;
-      if (sameVersion && mediaIsVisible() && playlistItems.length) {
-        updateChrome();
-        return;
-      }
-
-      applyCurrentPayload(current);
-      updateChrome();
-    } catch (err) {
-      networkOk = false;
-      noteError(err, 'poll');
-      updateChrome();
     }
   }
 
