@@ -1,6 +1,6 @@
 /* Minimal shell cache so /player opens on the Pi with no Wi‑Fi.
    Media blobs are handled by the page Cache API (not here). */
-const SHELL_CACHE = 'hw-signage-shell-v2';
+const SHELL_CACHE = 'hw-signage-shell-v3';
 const SHELL_URLS = [
   './',
   './index.html',

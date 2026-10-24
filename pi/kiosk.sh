@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-PLAYER_URL="${HW_PLAYER_URL:-http://127.0.0.1:4000/player/?v=1.6.1}"
+PLAYER_URL="${HW_PLAYER_URL:-http://127.0.0.1:4000/player/?v=1.6.2}"
 HEALTH_URL="${HW_HEALTH_URL:-http://127.0.0.1:4000/api/health}"
 MAX_WAIT="${HW_KIOSK_WAIT:-120}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

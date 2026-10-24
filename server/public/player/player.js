@@ -1,10 +1,10 @@
 (() => {
-  const APP_VERSION = '1.6.1-web';
+  const APP_VERSION = '1.6.2-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const WAKE_LOCK_MS = 30_000;
-  const CACHE_NAME = 'hw-signage-media-v4';
+  const CACHE_NAME = 'hw-signage-media-v5';
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
   /** One-at-a-time downloads so 15 Mbps Wi‑Fi isn't contested */
@@ -146,6 +146,8 @@
   let bgRaf = 0;
   let useCanvasBg = true;
   let wakeLockTimer = null;
+  /** Bumps when a new video source is applied so late play() results are ignored */
+  let videoPlayGeneration = 0;
   /** absoluteUrl → { objectUrl, type, blob } — in-memory for current session */
   const mediaMemory = new Map();
   /** absoluteUrl → timestamp when retry is allowed */
@@ -285,11 +287,19 @@
   }
 
   function mediaIsVisible() {
-    if (showingMedia && cachedObjectUrl) return true;
     const imgOk =
-      imageView.style.display !== 'none' && !imageView.hidden && !!imageView.getAttribute('src');
+      imageView.style.display !== 'none' &&
+      !imageView.hidden &&
+      !!imageView.getAttribute('src') &&
+      imageView.complete &&
+      imageView.naturalWidth > 0;
+    // Require a real decoded frame — src alone can leave a blank Chromium tab on Pi
     const vidOk =
-      videoView.style.display !== 'none' && !videoView.hidden && !!videoView.getAttribute('src');
+      videoView.style.display !== 'none' &&
+      !videoView.hidden &&
+      !!videoView.getAttribute('src') &&
+      videoView.readyState >= 2 &&
+      videoView.videoWidth > 0;
     return imgOk || vidOk;
   }
 
@@ -346,7 +356,7 @@
   }
 
   function showWaiting(msg, { force = false } = {}) {
-    if (!isRegistered()) return;
+    if (!force && !isRegistered()) return;
     if (!force && mediaIsVisible()) {
       updateCodeRail();
       return;
@@ -400,42 +410,52 @@
   }
 
   function startBgCanvasFromVideo(video) {
-    stopBgCanvas();
-    if (!bgCanvas || !video) return;
-    setVisible(bgCanvas, true);
-    setVisible(bgVideo, false);
-    setVisible(bgImage, false);
-    const ctx = bgCanvas.getContext('2d', { alpha: false });
-    if (!ctx) {
-      useCanvasBg = false;
-      setVisible(bgCanvas, false);
-      setVisible(bgVideo, true);
-      bgVideo.src = video.src || cachedObjectUrl || '';
-      bgVideo.muted = true;
-      bgVideo.loop = true;
-      bgVideo.play().catch(() => {});
-      return;
-    }
-
-    const tick = () => {
-      bgRaf = 0;
-      if (!showingMedia || cachedType !== 'video') return;
-      const cw = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
-      const ch = Math.max(1, window.innerHeight || document.documentElement.clientHeight);
-      if (bgCanvas.width !== cw) bgCanvas.width = cw;
-      if (bgCanvas.height !== ch) bgCanvas.height = ch;
-      try {
-        ctx.fillStyle = '#111';
-        ctx.fillRect(0, 0, cw, ch);
-        if (video.readyState >= 2) {
-          drawCoverBlur(ctx, video, cw, ch);
-        }
-      } catch (err) {
-        noteError(err, 'bgCanvas');
+    // Never let blur background block / break foreground video on Pi Chromium
+    if (!useCanvasBg || !bgCanvas || !video) return;
+    try {
+      stopBgCanvas();
+      setVisible(bgCanvas, true);
+      setVisible(bgVideo, false);
+      setVisible(bgImage, false);
+      const ctx = bgCanvas.getContext('2d', { alpha: false });
+      if (!ctx) {
+        useCanvasBg = false;
+        setVisible(bgCanvas, false);
+        return;
       }
+
+      let failCount = 0;
+      const tick = () => {
+        bgRaf = 0;
+        if (!useCanvasBg || !showingMedia || cachedType !== 'video') return;
+        const cw = Math.max(1, window.innerWidth || document.documentElement.clientWidth);
+        const ch = Math.max(1, window.innerHeight || document.documentElement.clientHeight);
+        if (bgCanvas.width !== cw) bgCanvas.width = cw;
+        if (bgCanvas.height !== ch) bgCanvas.height = ch;
+        try {
+          ctx.fillStyle = '#111';
+          ctx.fillRect(0, 0, cw, ch);
+          if (video.readyState >= 2 && video.videoWidth > 0) {
+            drawCoverBlur(ctx, video, cw, ch);
+            failCount = 0;
+          }
+        } catch (err) {
+          failCount += 1;
+          noteError(err, 'bgCanvas');
+          if (failCount >= 3) {
+            useCanvasBg = false;
+            stopBgCanvas();
+            return;
+          }
+        }
+        bgRaf = requestAnimationFrame(tick);
+      };
       bgRaf = requestAnimationFrame(tick);
-    };
-    bgRaf = requestAnimationFrame(tick);
+    } catch (err) {
+      noteError(err, 'startBgCanvasFromVideo');
+      useCanvasBg = false;
+      stopBgCanvas();
+    }
   }
 
   function stopVideo() {
@@ -502,68 +522,237 @@
     }
   }
 
-  function displayMedia(url, type, options = {}) {
-    // Strict: never play from remote /uploads — only fully-downloaded blob: URLs
-    if (!url || !String(url).startsWith('blob:')) {
-      noteError(new Error('refused non-blob playback URL'), 'displayMedia');
-      return;
+  function isSameOriginUploadsUrl(url) {
+    try {
+      const u = new URL(url, location.href);
+      return u.origin === location.origin && u.pathname.startsWith('/uploads/');
+    } catch {
+      return false;
     }
-    const loop = options.loop !== false;
-    updateCodeRail();
-    if (isRegistered()) setVisible(waitingPanel, false);
-    isPreloading = false;
+  }
 
-    if (cachedObjectUrl && cachedObjectUrl !== url && cachedObjectUrl.startsWith('blob:')) {
-      let stillUsed = false;
-      for (const entry of mediaMemory.values()) {
-        if (entry.objectUrl === cachedObjectUrl) {
-          stillUsed = true;
-          break;
+  function isPlayableMediaUrl(url) {
+    if (!url) return false;
+    const s = String(url);
+    return s.startsWith('blob:') || isSameOriginUploadsUrl(s);
+  }
+
+  /** Pi Chromium often needs an explicit video/* MIME on the Blob for blob: playback. */
+  function objectUrlFromBlob(blob, type) {
+    let typed = blob;
+    try {
+      if (type === 'video' && (!blob.type || !blob.type.startsWith('video/'))) {
+        typed = blob.slice(0, blob.size, 'video/mp4');
+      } else if (type === 'image' && (!blob.type || !blob.type.startsWith('image/'))) {
+        typed = blob.slice(0, blob.size, 'image/jpeg');
+      } else if (type === 'video' && blob.type && !/mp4|webm|ogg/i.test(blob.type)) {
+        typed = blob.slice(0, blob.size, 'video/mp4');
+      }
+    } catch {
+      typed = blob;
+    }
+    return URL.createObjectURL(typed);
+  }
+
+  function findAbsoluteUrlForObjectUrl(objectUrl) {
+    if (!objectUrl) return null;
+    for (const [abs, entry] of mediaMemory.entries()) {
+      if (entry && entry.objectUrl === objectUrl) return abs;
+    }
+    return null;
+  }
+
+  function videoCodecHint() {
+    try {
+      const probe = document.createElement('video');
+      const mp4 =
+        probe.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') ||
+        probe.canPlayType('video/mp4; codecs="avc1.4D401E, mp4a.40.2"') ||
+        probe.canPlayType('video/mp4');
+      if (!mp4) {
+        return 'This browser may not play MP4/H.264 — encode as H.264 AAC MP4.';
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'Use H.264 (Baseline/Main) + AAC in an MP4 for Raspberry Pi Chromium.';
+  }
+
+  function waitForVideoReady(video, timeoutMs = 20_000) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        video.removeEventListener('loadeddata', onReady);
+        video.removeEventListener('canplay', onReady);
+        video.removeEventListener('error', onError);
+        fn(arg);
+      };
+      const onReady = () => finish(resolve);
+      const onError = () => {
+        const code = video.error ? video.error.code : '?';
+        finish(reject, new Error(`video element error code=${code}`));
+      };
+      const timer = setTimeout(() => finish(reject, new Error('video load timeout')), timeoutMs);
+      video.addEventListener('loadeddata', onReady);
+      video.addEventListener('canplay', onReady);
+      video.addEventListener('error', onError);
+      if (video.readyState >= 2 && video.videoWidth > 0) finish(resolve);
+    });
+  }
+
+  async function safeVideoPlay(video) {
+    video.muted = true;
+    video.defaultMuted = true;
+    video.volume = 0;
+    video.setAttribute('muted', '');
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    try {
+      await video.play();
+      return true;
+    } catch (err) {
+      noteError(err, 'video.play');
+      video.muted = true;
+      video.defaultMuted = true;
+      video.volume = 0;
+      try {
+        await video.play();
+        return true;
+      } catch (err2) {
+        noteError(err2, 'video.play.retryMuted');
+        return false;
+      }
+    }
+  }
+
+  function revokeIfUnused(objectUrl) {
+    if (!objectUrl || !String(objectUrl).startsWith('blob:')) return;
+    for (const entry of mediaMemory.values()) {
+      if (entry.objectUrl === objectUrl) return;
+    }
+    try {
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /**
+   * Play video from blob: (preferred) or same-origin /uploads/ fallback.
+   * Pi Chromium often fails on blob: video even when the file downloaded fine.
+   */
+  async function playVideoSource(url, { loop = true, sourceUrl = null, allowFallback = true } = {}) {
+    const gen = ++videoPlayGeneration;
+    setVisible(imageView, false);
+    setVisible(videoView, true);
+    stopBgCanvas();
+
+    videoView.muted = true;
+    videoView.defaultMuted = true;
+    videoView.volume = 0;
+    videoView.loop = loop;
+    videoView.playsInline = true;
+    videoView.setAttribute('playsinline', '');
+    videoView.setAttribute('webkit-playsinline', '');
+    videoView.setAttribute('muted', '');
+    videoView.setAttribute('autoplay', '');
+    videoView.onloadeddata = null;
+    videoView.onplaying = null;
+    videoView.onerror = null;
+
+    try {
+      videoView.pause();
+    } catch {
+      /* ignore */
+    }
+    videoView.src = url;
+    try {
+      videoView.load();
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      await waitForVideoReady(videoView);
+      if (gen !== videoPlayGeneration) return false;
+      const played = await safeVideoPlay(videoView);
+      if (gen !== videoPlayGeneration) return false;
+      if (!played || videoView.videoWidth <= 0) {
+        throw new Error('play failed or zero video dimensions');
+      }
+
+      cachedObjectUrl = url;
+      cachedType = 'video';
+      showingMedia = true;
+      store.set('cachedType', 'video');
+      if (isRegistered()) setVisible(waitingPanel, false);
+      updateChrome();
+
+      // Background blur is decorative only — never block foreground playback
+      try {
+        syncBackground(url, 'video');
+        if (useCanvasBg) startBgCanvasFromVideo(videoView);
+      } catch (err) {
+        noteError(err, 'video.background');
+        useCanvasBg = false;
+        stopBgCanvas();
+      }
+      return true;
+    } catch (err) {
+      noteError(err, 'playVideoSource');
+      if (allowFallback) {
+        const fallback = sourceUrl || findAbsoluteUrlForObjectUrl(url);
+        if (fallback && isSameOriginUploadsUrl(fallback) && fallback !== url) {
+          noteError(new Error(`blob video failed; falling back to ${fallback}`), 'video.fallback');
+          return playVideoSource(fallback, {
+            loop,
+            sourceUrl: null,
+            allowFallback: false,
+          });
         }
       }
-      if (!stillUsed) {
+      if (gen === videoPlayGeneration) {
+        showingMedia = false;
         try {
-          URL.revokeObjectURL(cachedObjectUrl);
+          videoView.removeAttribute('src');
+          videoView.load();
         } catch {
           /* ignore */
         }
+        showWaiting(`Video won’t play. ${videoCodecHint()}`, { force: true });
       }
+      return false;
+    }
+  }
+
+  function displayMedia(url, type, options = {}) {
+    // Prefer fully-downloaded blob: URLs; allow same-origin /uploads/ as Pi Chromium fallback
+    if (!isPlayableMediaUrl(url)) {
+      noteError(new Error('refused non-local playback URL'), 'displayMedia');
+      return;
+    }
+    const loop = options.loop !== false;
+    const sourceUrl = options.sourceUrl || findAbsoluteUrlForObjectUrl(url) || null;
+    updateCodeRail();
+    isPreloading = false;
+
+    if (cachedObjectUrl && cachedObjectUrl !== url) {
+      revokeIfUnused(cachedObjectUrl);
     }
     cachedObjectUrl = url;
     cachedType = type;
-    showingMedia = true;
     store.set('cachedType', type);
 
     if (type === 'video') {
-      setVisible(imageView, false);
-      setVisible(videoView, true);
-      videoView.src = url;
-      videoView.muted = true;
-      videoView.defaultMuted = true;
-      videoView.volume = 0;
-      videoView.loop = loop;
-      videoView.playsInline = true;
-      videoView.setAttribute('playsinline', '');
-      videoView.setAttribute('webkit-playsinline', '');
-
-      const onFrame = () => {
-        syncBackground(url, 'video');
-        if (useCanvasBg) startBgCanvasFromVideo(videoView);
-      };
-      videoView.onloadeddata = onFrame;
-      videoView.onplaying = () => {
-        if (useCanvasBg) startBgCanvasFromVideo(videoView);
-        if (!useCanvasBg && bgVideo && !bgVideo.paused) {
-          try {
-            bgVideo.currentTime = videoView.currentTime || 0;
-          } catch {
-            /* ignore */
-          }
-        }
-      };
-      videoView.play().catch((err) => noteError(err, 'video.play'));
-      syncBackground(url, 'video');
+      // Optimistic hide of waiting only after frames decode (playVideoSource)
+      showingMedia = false;
+      void playVideoSource(url, { loop, sourceUrl, allowFallback: true });
     } else {
+      videoPlayGeneration += 1;
       stopVideo();
       setVisible(videoView, false);
       setVisible(imageView, true);
@@ -571,10 +760,18 @@
       imageView.src = url;
       imageView.onload = () => {
         showingMedia = true;
+        if (isRegistered()) setVisible(waitingPanel, false);
+        updateChrome();
       };
       imageView.onerror = () => {
         noteError(new Error('image failed to load'), 'image');
         showingMedia = false;
+        if (sourceUrl && isSameOriginUploadsUrl(sourceUrl) && sourceUrl !== url) {
+          imageView.src = sourceUrl;
+          return;
+        }
+        showWaiting('Image failed to load', { force: true });
+        updateChrome();
       };
     }
   }
@@ -610,8 +807,10 @@
     const blob = await res.blob();
     if (!blob || blob.size <= 0) return null;
     const type =
-      res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
-    return { blob, type, objectUrl: URL.createObjectURL(blob) };
+      res.headers.get('X-Signage-Type') ||
+      (blob.type && blob.type.startsWith('video') ? 'video' : 'image');
+    const sourceUrl = res.headers.get('X-Signage-Url') || url;
+    return { blob, type, objectUrl: objectUrlFromBlob(blob, type), sourceUrl };
   }
 
   async function cacheGetAny() {
@@ -630,16 +829,20 @@
       const blob = await res.blob();
       if (!blob || blob.size <= 0) return null;
       const type =
-        res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
-      return { blob, type, objectUrl: URL.createObjectURL(blob) };
+        res.headers.get('X-Signage-Type') ||
+        (blob.type && blob.type.startsWith('video') ? 'video' : 'image');
+      const sourceUrl = res.headers.get('X-Signage-Url') || null;
+      return { blob, type, objectUrl: objectUrlFromBlob(blob, type), sourceUrl };
     }
     const res = await cache.match(ours[ours.length - 1]);
     if (!res) return null;
     const blob = await res.blob();
     if (!blob || blob.size <= 0) return null;
     const type =
-      res.headers.get('X-Signage-Type') || (blob.type.startsWith('video') ? 'video' : 'image');
-    return { blob, type, objectUrl: URL.createObjectURL(blob) };
+      res.headers.get('X-Signage-Type') ||
+      (blob.type && blob.type.startsWith('video') ? 'video' : 'image');
+    const sourceUrl = res.headers.get('X-Signage-Url') || null;
+    return { blob, type, objectUrl: objectUrlFromBlob(blob, type), sourceUrl };
   }
 
   function clearMediaMemory(map = mediaMemory) {
@@ -654,12 +857,19 @@
   }
 
   /** Full-file download into ArrayBuffer — never stream partial content into <video>. */
-  async function downloadCompleteBlob(url) {
+  async function downloadCompleteBlob(url, typeHint = null) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`download HTTP ${res.status}`);
     const buf = await res.arrayBuffer();
     if (!buf || buf.byteLength <= 0) throw new Error('empty download');
-    const ctype = res.headers.get('Content-Type') || 'application/octet-stream';
+    let ctype = (res.headers.get('Content-Type') || '').split(';')[0].trim();
+    if (typeHint === 'video' && (!ctype || !ctype.startsWith('video/'))) {
+      ctype = 'video/mp4';
+    } else if (typeHint === 'image' && (!ctype || !ctype.startsWith('image/'))) {
+      ctype = 'image/jpeg';
+    } else if (!ctype || ctype === 'application/octet-stream') {
+      ctype = typeHint === 'video' ? 'video/mp4' : 'application/octet-stream';
+    }
     return new Blob([buf], { type: ctype });
   }
 
@@ -701,7 +911,12 @@
           type: hit.type || item.type,
           blob: hit.blob,
         });
-        return { url, objectUrl: hit.objectUrl, type: hit.type || item.type, source: 'cache' };
+        return {
+          url: hit.sourceUrl || url,
+          objectUrl: hit.objectUrl,
+          type: hit.type || item.type,
+          source: 'cache',
+        };
       }
     } catch (err) {
       noteError(err, 'cacheGetUrl');
@@ -737,8 +952,8 @@
       }
 
       try {
-        const blob = await downloadCompleteBlob(url);
-        const objectUrl = URL.createObjectURL(blob);
+        const blob = await downloadCompleteBlob(url, item.type);
+        const objectUrl = objectUrlFromBlob(blob, item.type);
         memoryMap.set(url, { objectUrl, type: item.type, blob });
         downloadBackoffUntil.delete(url);
         try {
@@ -850,7 +1065,10 @@
       // Fallback: any single cached media file
       const hit = await cacheGetAny();
       if (hit?.objectUrl?.startsWith('blob:')) {
-        displayMedia(hit.objectUrl, hit.type, { loop: true });
+        displayMedia(hit.objectUrl, hit.type, {
+          loop: true,
+          sourceUrl: hit.sourceUrl || null,
+        });
         updateChrome();
         return true;
       }
@@ -934,7 +1152,10 @@
     store.set('playlistItemStartedAt', String(Date.now()));
     const item = playlistItems[playlistIndex];
 
-    displayMedia(media.objectUrl, media.type || item.type, { loop: !isMulti });
+    displayMedia(media.objectUrl, media.type || item.type, {
+      loop: !isMulti,
+      sourceUrl: media.url || absoluteMediaUrl(item.url),
+    });
     updateChrome();
     scheduleAdvance(item, isMulti);
   }

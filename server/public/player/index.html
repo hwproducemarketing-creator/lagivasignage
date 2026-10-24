@@ -15,7 +15,7 @@
       <!-- Full-bleed blurred fill (behind sharp media) -->
       <div id="mediaBg" aria-hidden="true">
         <img id="bgImage" alt="" hidden />
-        <video id="bgVideo" playsinline muted loop autoplay hidden></video>
+        <video id="bgVideo" playsinline muted loop autoplay preload="auto" hidden></video>
         <canvas id="bgCanvas" hidden></canvas>
         <div id="bgDim"></div>
       </div>
@@ -23,7 +23,7 @@
       <!-- Foreground sized to content so letterbox is NOT painted black by the video element -->
       <div id="mediaFg">
         <img id="imageView" alt="" hidden />
-        <video id="videoView" playsinline muted loop autoplay hidden></video>
+        <video id="videoView" playsinline muted loop autoplay preload="auto" hidden></video>
       </div>
 
       <div id="waitingPanel" class="panel">
@@ -45,6 +45,6 @@
         <p class="hint">Tap 3× anywhere or press Escape to close</p>
       </div>
     </div>
-    <script src="./player.js?v=1.6.1"></script>
+    <script src="./player.js?v=1.6.2"></script>
   </body>
 </html>

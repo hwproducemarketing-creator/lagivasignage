@@ -41,7 +41,7 @@ Run the whole signage system **on a Raspberry Pi** at the store:
 | Hotspot password | `hwproduce` | **Change this** — nearby phones can join |
 | Admin URL (phone) | `http://10.42.0.1:4000` | NetworkManager hotspot gateway |
 | Alt admin URL | `http://192.168.4.1:4000` | hostapd-style fallback |
-| Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.1` | Fullscreen kiosk, no mouse |
+| Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.2` | Fullscreen kiosk, no mouse |
 | Admin login | `admin` / `changeme` | From `.env` (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) |
 | Data folder | `/home/<your-user>/hw-signage-data` | SQLite + uploads |
 
@@ -142,7 +142,7 @@ sudo reboot
 2. Wi‑Fi hotspot **`HW-Signage`** appears (password **`hwproduce`** until you change it).  
 3. Signage server listens on port **4000**.  
 4. Chromium opens **true fullscreen kiosk** to the local player:  
-   `http://127.0.0.1:4000/player/?v=1.6.1`  
+   `http://127.0.0.1:4000/player/?v=1.6.2`  
 5. The **mouse cursor is hidden** (`unclutter` / `unclutter-xfixes`).  
 6. The HDMI display **stays on** (no screensaver / sleep) until you power off the Pi.
 
@@ -197,7 +197,8 @@ After pairing, the strip goes away when content is playing. You can still publis
 Tips:
 
 - Prefer **Wi‑Fi already on the hotspot** while uploading so the big file lands on the Pi.  
-- After content has played once, the player caches media for offline use if the phone disconnects later.
+- After content has played once, the player caches media for offline use if the phone disconnects later.  
+- **Videos for Pi Chromium:** export as **H.264 (AVC) + AAC inside an `.mp4`** (Baseline or Main profile). HEVC/H.265, ProRes, and many WebM/VP9 files often download fine but show a **blank screen** because Pi Chromium cannot decode them.
 
 ---
 
@@ -348,6 +349,7 @@ Data remains in `~/hw-signage-data` until you delete it.
 | **Login cookie fails** | Ensure `.env` has `COOKIE_SECURE=false` · restart `sudo systemctl restart hw-signage` |
 | **No kiosk / black screen** | Confirm desktop is logged in · `echo $DISPLAY` · run `bash ~/lagivasignage/pi/kiosk.sh` on the desktop · `sudo journalctl -u hw-signage-kiosk -e` · `sudo systemctl restart hw-signage-kiosk` |
 | **Mouse cursor visible** | `sudo apt install -y unclutter` · `sudo systemctl restart hw-signage-kiosk` · confirm kiosk uses `--kiosk --start-fullscreen` |
+| **Video blank / black after publish** | Re-encode as **H.264 AAC MP4** · hard-refresh kiosk: `sudo systemctl restart hw-signage-kiosk` · confirm player URL has `?v=1.6.2` · photos OK + video blank usually means codec, not Wi‑Fi |
 | **Server not up** | `curl -s http://127.0.0.1:4000/api/health` · `sudo journalctl -u hw-signage -e` · confirm `npm run build` created `admin/dist` · `sudo systemctl restart hw-signage` |
 | **`better-sqlite3` build errors** | `sudo apt install -y build-essential python3` then `cd ~/lagivasignage && npm rebuild` |
 | **Screen goes black overnight** | `sudo bash ~/lagivasignage/pi/disable-sleep.sh` then `sudo reboot` |
