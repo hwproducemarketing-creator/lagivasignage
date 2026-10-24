@@ -1,0 +1,19 @@
+[Unit]
+Description=H&W Signage Chromium kiosk (local player)
+After=graphical.target hw-signage.service
+Wants=hw-signage.service
+Requires=graphical.target
+
+[Service]
+Type=simple
+User=__SIGNAGE_USER__
+Group=__SIGNAGE_USER__
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/__SIGNAGE_USER__/.Xauthority
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/pi/kiosk.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

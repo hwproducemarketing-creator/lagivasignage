@@ -67,7 +67,33 @@ npm start
 
 Serves the built admin from the Express server (when `admin/dist` exists).
 
-## Deploy on Railway (recommended — no laptop at the store)
+## Raspberry Pi local mode (no cloud)
+
+Run the whole stack **on a Pi at the store**: local SQLite, Wi‑Fi hotspot for staff phones, Chromium kiosk on the TV/HDMI display. No Railway required after setup.
+
+→ Full guide: **[pi/README.md](pi/README.md)**
+
+Quick path:
+
+```bash
+# On the Pi (Raspberry Pi OS Bookworm desktop)
+cd ~
+git clone <this-repo> lagivasignage
+cd lagivasignage
+sudo bash pi/setup.sh
+sudo reboot
+```
+
+| | |
+|--|--|
+| Hotspot SSID | `HW-Signage` |
+| Hotspot password | `hwproduce` (**change after install**) |
+| Admin on phone | `http://10.42.0.1:4000` |
+| Player kiosk | `http://127.0.0.1:4000/player/` |
+
+Staff: join `HW-Signage` → open the admin URL → upload/publish. The Pi already shows the player on localhost.
+
+## Deploy on Railway (optional cloud)
 
 Railway runs the API + admin dashboard 24/7 with HTTPS. Fire TVs and phones talk to your Railway URL.
 

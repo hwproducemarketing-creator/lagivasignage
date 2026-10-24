@@ -74,9 +74,16 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      // Same site when admin + API share one Railway HTTPS URL
+      // Same site when admin + API share one origin
       sameSite: 'lax',
-      secure: isProd,
+      // Railway HTTPS: leave default (secure in production).
+      // Pi hotspot is HTTP — set COOKIE_SECURE=false in .env
+      secure:
+        process.env.COOKIE_SECURE === 'true'
+          ? true
+          : process.env.COOKIE_SECURE === 'false'
+            ? false
+            : isProd,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
   })

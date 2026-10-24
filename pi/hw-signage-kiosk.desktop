@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=H&W Signage Kiosk
+Comment=Fullscreen local signage player
+Exec=__INSTALL_DIR__/pi/kiosk.sh
+X-GNOME-Autostart-enabled=true
+NoDisplay=false
+Terminal=false

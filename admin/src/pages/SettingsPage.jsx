@@ -112,6 +112,14 @@ export default function SettingsPage() {
                 : 'https://heroic-acceptance-production-433e.up.railway.app/player'}
             </a>
           </p>
+          <p className="mt-2 rounded-md bg-hw-light/60 px-3 py-2 text-xs text-hw-dark">
+            <strong>Raspberry Pi hotspot:</strong> connect phone Wi‑Fi to{' '}
+            <code className="font-mono">HW-Signage</code>, then open this page at{' '}
+            <code className="font-mono">http://10.42.0.1:4000</code> (or{' '}
+            <code className="font-mono">http://192.168.4.1:4000</code>). The TV browser uses{' '}
+            <code className="font-mono">http://127.0.0.1:4000/player</code> on the Pi itself. See{' '}
+            <code className="font-mono">pi/README.md</code>.
+          </p>
         </div>
         <div>
           <label className="label">Default media (fallback when schedule ends)</label>

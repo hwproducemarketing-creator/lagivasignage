@@ -1,0 +1,15 @@
+[Unit]
+Description=H&W Signage WiFi hotspot (HW-Signage)
+After=NetworkManager.service network-online.target
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=__INSTALL_DIR__/pi/start-hotspot.sh
+ExecStop=/usr/bin/nmcli connection down HW-Signage-Hotspot
+# Ignore stop failure if connection name differs
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
