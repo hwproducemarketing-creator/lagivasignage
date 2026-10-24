@@ -91,14 +91,15 @@ sudo reboot
 
 `setup.sh` is idempotent. It will:
 
-1. Install Node 20, Chromium, NetworkManager, unclutter, curl  
+1. Install Node 20, Chromium, NetworkManager, unclutter, curl, x11-xserver-utils  
 2. `npm install` + `npm run build`  
 3. Create `~/hw-signage-data` and root `.env` (`DATA_DIR`, `COOKIE_SECURE=false`, CORS for hotspot IPs)  
 4. Enable systemd units:  
    - `hw-signage` — Express server  
    - `hw-signage-hotspot` — Wi‑Fi AP  
    - `hw-signage-kiosk` — Chromium fullscreen player  
-5. Add desktop autostart for the kiosk  
+5. **Never-sleep** — disable screen blanking, DPMS, and system suspend  
+6. Add desktop autostart for the kiosk + nosleep  
 
 ---
 
@@ -107,13 +108,43 @@ sudo reboot
 1. **Hotspot** `HW-Signage` appears.  
 2. **Server** listens on `0.0.0.0:4000` (health: `http://127.0.0.1:4000/api/health`).  
 3. **Chromium** opens kiosk to `http://127.0.0.1:4000/player/?v=1.6.0`.  
-4. Phone on hotspot can open admin at `http://10.42.0.1:4000`.
+4. Phone on hotspot can open admin at `http://10.42.0.1:4000`.  
+5. **Display stays on** — no screensaver / sleep until you power off the Pi.
 
 Check status:
 
 ```bash
 sudo systemctl status hw-signage hw-signage-hotspot hw-signage-kiosk
 curl -s http://127.0.0.1:4000/api/health
+```
+
+---
+
+## Never sleep (display always on)
+
+The TV/HDMI output must not blank overnight. `setup.sh` runs `pi/disable-sleep.sh`, which:
+
+| Layer | What is disabled |
+|-------|------------------|
+| **raspi-config** | Screen blanking → No |
+| **systemd** | `sleep` / `suspend` / `hibernate` / `hybrid-sleep` targets **masked** |
+| **logind** | `IdleAction=ignore` (no idle suspend) |
+| **X11** | `xset s off`, `xset -dpms`, `xset s noblank` + Xorg BlankTime=0 |
+| **Wayfire / labwc** | `dpms_timeout = -1`; kill `swayidle` on labwc autostart |
+| **Chromium** | `--disable-features=IdleDetection` |
+| **Autostart** | Re-applies X11 nosleep on every desktop login |
+
+Re-apply anytime:
+
+```bash
+sudo bash ~/lagivasignage/pi/disable-sleep.sh
+sudo reboot
+```
+
+**Undo suspend masking later** (if you reuse the Pi as a normal desktop):
+
+```bash
+sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.target
 ```
 
 ---
@@ -161,6 +192,7 @@ sudo systemctl restart hw-signage
 | `network-manager` + `nmcli` | Hotspot (`wifi hotspot`) |
 | `chromium` / `chromium-browser` | Kiosk player |
 | `unclutter` | Hide mouse cursor |
+| `x11-xserver-utils` | `xset` to disable DPMS / blanking |
 | `curl` | Health wait in `kiosk.sh` |
 
 ### hostapd fallback (if nmcli hotspot fails)

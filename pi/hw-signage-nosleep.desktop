@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=H&W Signage Never Sleep
+Comment=Disable DPMS / screensaver for kiosk display
+Exec=__INSTALL_DIR__/pi/disable-sleep.sh --session
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+Terminal=false

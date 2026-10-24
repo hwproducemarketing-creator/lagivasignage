@@ -7,6 +7,7 @@
 #  - npm install + admin build
 #  - DATA_DIR + .env for local production
 #  - systemd: hw-signage, hotspot, kiosk
+#  - never-sleep: DPMS/screensaver/suspend off
 #  - desktop autostart for kiosk (belt-and-suspenders)
 
 set -euo pipefail
@@ -41,7 +42,7 @@ echo
 
 export DEBIAN_FRONTEND=noninteractive
 
-echo "[1/8] Packages…"
+echo "[1/9] Packages…"
 apt-get update -y
 apt-get install -y \
   curl ca-certificates gnupg \
@@ -49,7 +50,8 @@ apt-get install -y \
   chromium \
   unclutter \
   fonts-liberation \
-  xdg-utils
+  xdg-utils \
+  x11-xserver-utils
 
 # Chromium package name differs; try chromium-browser if needed
 apt-get install -y chromium-browser 2>/dev/null || true
@@ -73,11 +75,11 @@ fi
 
 echo "Node $(node -v) / npm $(npm -v)"
 
-echo "[2/8] Data directory…"
+echo "[2/9] Data directory…"
 mkdir -p "$DATA_DIR/database" "$DATA_DIR/uploads"
 chown -R "$SIGNAGE_USER:$SIGNAGE_USER" "$DATA_DIR"
 
-echo "[3/8] .env…"
+echo "[3/9] .env…"
 ENV_FILE="$INSTALL_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   SECRET="$(openssl rand -hex 24 2>/dev/null || head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 48)"
@@ -102,13 +104,14 @@ else
   grep -q '^DATA_DIR=' "$ENV_FILE" || echo "DATA_DIR=$DATA_DIR" >> "$ENV_FILE"
 fi
 
-echo "[4/8] npm install + build (as $SIGNAGE_USER)…"
+echo "[4/9] npm install + build (as $SIGNAGE_USER)…"
 sudo -u "$SIGNAGE_USER" bash -lc "cd '$INSTALL_DIR' && npm install && npm run build"
 
-echo "[5/8] Scripts executable…"
+echo "[5/9] Scripts executable…"
 chmod +x "$INSTALL_DIR/pi/setup.sh" \
   "$INSTALL_DIR/pi/start-hotspot.sh" \
-  "$INSTALL_DIR/pi/kiosk.sh"
+  "$INSTALL_DIR/pi/kiosk.sh" \
+  "$INSTALL_DIR/pi/disable-sleep.sh"
 
 render_unit() {
   local src="$1"
@@ -118,7 +121,7 @@ render_unit() {
       "$src" > "$dest"
 }
 
-echo "[6/8] systemd units…"
+echo "[6/9] systemd units…"
 render_unit "$INSTALL_DIR/pi/hw-signage.service" /etc/systemd/system/hw-signage.service
 render_unit "$INSTALL_DIR/pi/hw-signage-hotspot.service" /etc/systemd/system/hw-signage-hotspot.service
 render_unit "$INSTALL_DIR/pi/hw-signage-kiosk.service" /etc/systemd/system/hw-signage-kiosk.service
@@ -128,20 +131,27 @@ systemctl enable hw-signage.service hw-signage-hotspot.service hw-signage-kiosk.
 systemctl restart hw-signage-hotspot.service || true
 systemctl restart hw-signage.service
 
-echo "[7/8] Desktop autostart (kiosk)…"
+echo "[7/9] Never-sleep (screen blank / DPMS / suspend)…"
+bash "$INSTALL_DIR/pi/disable-sleep.sh"
+
+echo "[8/9] Desktop autostart (kiosk + nosleep)…"
 AUTOSTART_DIR="/etc/xdg/autostart"
 mkdir -p "$AUTOSTART_DIR"
 sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
   "$INSTALL_DIR/pi/hw-signage-kiosk.desktop" > "$AUTOSTART_DIR/hw-signage-kiosk.desktop"
+sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
+  "$INSTALL_DIR/pi/hw-signage-nosleep.desktop" > "$AUTOSTART_DIR/hw-signage-nosleep.desktop"
 
 # Also user autostart
 USER_AS="$HOME_DIR/.config/autostart"
 mkdir -p "$USER_AS"
 sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
   "$INSTALL_DIR/pi/hw-signage-kiosk.desktop" > "$USER_AS/hw-signage-kiosk.desktop"
+sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" \
+  "$INSTALL_DIR/pi/hw-signage-nosleep.desktop" > "$USER_AS/hw-signage-nosleep.desktop"
 chown -R "$SIGNAGE_USER:$SIGNAGE_USER" "$HOME_DIR/.config"
 
-echo "[8/8] Optional: boot to desktop (kiosk needs a graphical session)"
+echo "[9/9] Optional: boot to desktop (kiosk needs a graphical session)"
 # Do not force raspi-config noninteractively if already graphical
 if command -v raspi-config >/dev/null 2>&1; then
   raspi-config nonint do_boot_behaviour B4 2>/dev/null || true
@@ -155,11 +165,13 @@ echo "Admin (phone)    : http://10.42.0.1:4000   (login admin / see .env ADMIN_P
 echo "                   http://192.168.4.1:4000  (if using hostapd fallback)"
 echo "Player (kiosk)   : http://127.0.0.1:4000/player/?v=1.6.0"
 echo "Data             : $DATA_DIR"
+echo "Display          : never-sleep enabled (blanking/DPMS/suspend off) — reboot to apply fully"
 echo
 echo "Useful commands:"
 echo "  sudo systemctl status hw-signage"
 echo "  sudo systemctl restart hw-signage"
 echo "  sudo journalctl -u hw-signage -f"
 echo "  sudo bash $INSTALL_DIR/pi/start-hotspot.sh"
+echo "  sudo bash $INSTALL_DIR/pi/disable-sleep.sh"
 echo
 echo "Reboot recommended: sudo reboot"
