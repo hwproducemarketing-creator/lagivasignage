@@ -41,7 +41,7 @@ Run the whole signage system **on a Raspberry Pi** at the store:
 | Hotspot password | `hwproduce` | **Change this** — nearby phones can join |
 | Admin URL (phone) | `http://10.42.0.1:4000` | NetworkManager hotspot gateway |
 | Alt admin URL | `http://192.168.4.1:4000` | hostapd-style fallback |
-| Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.0` | Kiosk uses localhost |
+| Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.1` | Fullscreen kiosk, no mouse |
 | Admin login | `admin` / `changeme` | From `.env` (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) |
 | Data folder | `/home/<your-user>/hw-signage-data` | SQLite + uploads |
 
@@ -115,15 +115,16 @@ sudo bash pi/setup.sh
 
 This takes several minutes. It will:
 
-1. Install Node 20, Chromium, NetworkManager, unclutter, curl, x11-xserver-utils  
+1. Install Node 20, Chromium, NetworkManager, unclutter (+ unclutter-xfixes if available), curl, x11-xserver-utils  
 2. `npm install` + `npm run build`  
 3. Create `~/hw-signage-data` and a root `.env` (`DATA_DIR`, `COOKIE_SECURE=false`, CORS for hotspot IPs)  
 4. Enable systemd units:  
    - `hw-signage` — Express server  
    - `hw-signage-hotspot` — Wi‑Fi AP  
-   - `hw-signage-kiosk` — Chromium fullscreen player  
+   - `hw-signage-kiosk` — Chromium **fullscreen** player (no mouse)  
 5. **Never-sleep** — disable screen blanking, DPMS, and system suspend  
 6. Add desktop autostart for the kiosk + nosleep  
+
 
 When it finishes, reboot:
 
@@ -140,9 +141,10 @@ sudo reboot
 1. Desktop logs in.  
 2. Wi‑Fi hotspot **`HW-Signage`** appears (password **`hwproduce`** until you change it).  
 3. Signage server listens on port **4000**.  
-4. Chromium opens fullscreen to the local player:  
-   `http://127.0.0.1:4000/player/?v=1.6.0`  
-5. The HDMI display **stays on** (no screensaver / sleep) until you power off the Pi.
+4. Chromium opens **true fullscreen kiosk** to the local player:  
+   `http://127.0.0.1:4000/player/?v=1.6.1`  
+5. The **mouse cursor is hidden** (`unclutter` / `unclutter-xfixes`).  
+6. The HDMI display **stays on** (no screensaver / sleep) until you power off the Pi.
 
 Quick checks on the Pi (keyboard or SSH):
 
@@ -242,6 +244,30 @@ sudo systemctl restart hw-signage
 
 ---
 
+## Fullscreen + no mouse cursor
+
+The store TV should look like a dedicated sign, not a desktop:
+
+| Piece | Behavior |
+|-------|----------|
+| **`pi/kiosk.sh`** | Chromium `--kiosk --start-fullscreen` (no window chrome) |
+| **Profile** | Persistent `~/.config/hw-signage-chromium` so offline media cache survives reboots (**not** incognito) |
+| **Cursor** | `unclutter -idle 0 -root` (or `unclutter-xfixes`) started before Chromium |
+| **Health wait** | Waits for `http://127.0.0.1:4000/api/health` before launching |
+| **Player CSS** | `cursor: none` on the page; JS also requests fullscreen on boot as a backup |
+| **Autostart** | systemd `hw-signage-kiosk` + desktop `.desktop` autostart |
+
+If you ever see a mouse pointer again:
+
+```bash
+sudo apt install -y unclutter
+sudo systemctl restart hw-signage-kiosk
+# or from the desktop:
+bash ~/lagivasignage/pi/kiosk.sh
+```
+
+---
+
 ## Never sleep (display always on)
 
 The TV/HDMI output must not blank overnight. `setup.sh` runs `pi/disable-sleep.sh`, which:
@@ -321,6 +347,7 @@ Data remains in `~/hw-signage-data` until you delete it.
 | **Phone can’t open admin** | Confirm SSID `HW-Signage` · try `http://10.42.0.1:4000` and `http://192.168.4.1:4000` · stay on the hotspot (phone must not switch back to LTE-only for that page) |
 | **Login cookie fails** | Ensure `.env` has `COOKIE_SECURE=false` · restart `sudo systemctl restart hw-signage` |
 | **No kiosk / black screen** | Confirm desktop is logged in · `echo $DISPLAY` · run `bash ~/lagivasignage/pi/kiosk.sh` on the desktop · `sudo journalctl -u hw-signage-kiosk -e` · `sudo systemctl restart hw-signage-kiosk` |
+| **Mouse cursor visible** | `sudo apt install -y unclutter` · `sudo systemctl restart hw-signage-kiosk` · confirm kiosk uses `--kiosk --start-fullscreen` |
 | **Server not up** | `curl -s http://127.0.0.1:4000/api/health` · `sudo journalctl -u hw-signage -e` · confirm `npm run build` created `admin/dist` · `sudo systemctl restart hw-signage` |
 | **`better-sqlite3` build errors** | `sudo apt install -y build-essential python3` then `cd ~/lagivasignage && npm rebuild` |
 | **Screen goes black overnight** | `sudo bash ~/lagivasignage/pi/disable-sleep.sh` then `sudo reboot` |
@@ -338,7 +365,7 @@ Bookworm usually works with NetworkManager. If your dongle cannot AP via nmcli, 
 | `nodejs` 20+ | Signage server |
 | `network-manager` + `nmcli` | Hotspot (`wifi hotspot`) |
 | `chromium` / `chromium-browser` | Kiosk player |
-| `unclutter` | Hide mouse cursor |
+| `unclutter` / `unclutter-xfixes` | Hide mouse cursor (always) |
 | `x11-xserver-utils` | `xset` to disable DPMS / blanking |
 | `curl` | Health wait in `kiosk.sh` |
 

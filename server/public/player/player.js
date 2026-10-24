@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '1.6.0-web';
+  const APP_VERSION = '1.6.1-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
@@ -1434,6 +1434,7 @@
   }
 
   function enterFullscreen() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return;
     const el = document.documentElement;
     const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
     if (req) {
@@ -1546,6 +1547,8 @@
 
     startLoops();
     requestWakeLock();
+    // Backup if window manager did not already put Chromium in --kiosk fullscreen
+    enterFullscreen();
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch((err) => noteError(err, 'sw'));

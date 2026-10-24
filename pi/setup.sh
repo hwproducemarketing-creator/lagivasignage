@@ -55,6 +55,8 @@ apt-get install -y \
 
 # Chromium package name differs; try chromium-browser if needed
 apt-get install -y chromium-browser 2>/dev/null || true
+# Better cursor hider on some Bookworm images (optional)
+apt-get install -y unclutter-xfixes 2>/dev/null || true
 
 # Node.js 20 via NodeSource if missing / too old
 need_node=0
@@ -163,7 +165,8 @@ echo "Hotspot SSID     : HW-Signage"
 echo "Hotspot password : hwproduce   ← CHANGE THIS (HW_HOTSPOT_PASSWORD or edit pi/start-hotspot.sh)"
 echo "Admin (phone)    : http://10.42.0.1:4000   (login admin / see .env ADMIN_PASSWORD)"
 echo "                   http://192.168.4.1:4000  (if using hostapd fallback)"
-echo "Player (kiosk)   : http://127.0.0.1:4000/player/?v=1.6.0"
+echo "Player (kiosk)   : http://127.0.0.1:4000/player/?v=1.6.1"
+echo "Kiosk            : fullscreen Chromium + mouse cursor hidden (unclutter)"
 echo "Data             : $DATA_DIR"
 echo "Display          : never-sleep enabled (blanking/DPMS/suspend off) — reboot to apply fully"
 echo
