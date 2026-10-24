@@ -1,12 +1,35 @@
-# Raspberry Pi local mode (no Railway / no cloud)
+# H&W Produce — Raspberry Pi setup (local, no Railway)
 
-Run the entire H&W Produce signage stack **on a Raspberry Pi** at the store:
+Run the whole signage system **on a Raspberry Pi** at the store:
 
-- Node + SQLite + uploads on Pi disk  
-- Pi creates a Wi‑Fi **hotspot** for staff phones  
-- On boot: hotspot → signage server → Chromium kiosk on the local player  
+- Node server + SQLite + media files on the Pi’s SD card  
+- Pi creates a Wi‑Fi **hotspot** so staff phones can manage content  
+- On every boot: hotspot → signage server → Chromium fullscreen player  
 
-Railway deploy is unchanged. Use this guide only for standalone Pi installs.
+**No cloud / Railway required** after setup. Railway deploy is separate and unchanged.
+
+---
+
+## What you need
+
+### Hardware
+
+| Item | Recommendation |
+|------|----------------|
+| Raspberry Pi | **Pi 4 or Pi 5**, 2 GB+ RAM |
+| Power | Official Raspberry Pi power supply |
+| Storage | MicroSD **32 GB+** (A2 recommended) |
+| Display | HDMI TV / monitor (1080p is fine) |
+| Wi‑Fi | Built-in Wi‑Fi (or USB adapter that supports **AP / hotspot** mode) |
+| Phone | Any phone with Wi‑Fi (for admin) |
+
+### Software
+
+| Item | Detail |
+|------|--------|
+| OS | **Raspberry Pi OS (64-bit) with desktop**, Bookworm |
+| Tools on your PC | [Raspberry Pi Imager](https://www.raspberrypi.com/software/) |
+| During setup only | Temporary internet on the Pi (Wi‑Fi or Ethernet) for `apt` / `npm` |
 
 ---
 
@@ -14,56 +37,56 @@ Railway deploy is unchanged. Use this guide only for standalone Pi installs.
 
 | Item | Default | Notes |
 |------|---------|--------|
-| Hotspot SSID | `HW-Signage` | Edit `HW_HOTSPOT_SSID` or `pi/start-hotspot.sh` |
-| Hotspot password | `hwproduce` | **Change this** — store Wi‑Fi is open to anyone nearby |
+| Hotspot SSID | `HW-Signage` | Set via `HW_HOTSPOT_SSID` or edit `pi/start-hotspot.sh` |
+| Hotspot password | `hwproduce` | **Change this** — nearby phones can join |
 | Admin URL (phone) | `http://10.42.0.1:4000` | NetworkManager hotspot gateway |
 | Alt admin URL | `http://192.168.4.1:4000` | hostapd-style fallback |
 | Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.0` | Kiosk uses localhost |
-| Admin login | `admin` / `changeme` | Set in `.env` (`ADMIN_PASSWORD`) |
-| Data folder | `/home/<user>/hw-signage-data` | SQLite + uploads |
+| Admin login | `admin` / `changeme` | From `.env` (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) |
+| Data folder | `/home/<your-user>/hw-signage-data` | SQLite + uploads |
+
+> Your Linux username may **not** be `pi` (Imager lets you choose it). Below, replace `pi` with the username you set.
 
 ---
 
-## Staff day-to-day
+## Step 1 — Flash Raspberry Pi OS
 
-1. On your phone, join Wi‑Fi **`HW-Signage`** / password **`hwproduce`** (or your changed password).  
-2. Open Chrome/Safari → **`http://10.42.0.1:4000`**  
-3. Log in → upload / publish (same admin as always).  
-4. The Pi screen already shows the player on localhost — no pairing to Railway needed for local mode.  
-   (Optional: register a local “screen” via pairing if you use the Screens page; the kiosk player still works with publish-to-all content.)
+1. On a PC, open [Raspberry Pi Imager](https://www.raspberrypi.com/software/).  
+2. **Choose device** → your Pi model.  
+3. **Choose OS** → **Raspberry Pi OS (64-bit)** (Desktop / Bookworm).  
+4. Click the gear / OS customisation:
+   - Set **username** and **password** (remember these).  
+   - Enable **SSH** (password auth is fine).  
+   - Optional: enter home/store Wi‑Fi so the Pi gets internet on first boot.  
+5. Flash the microSD, insert it in the Pi, connect HDMI + power, boot.  
+6. Finish the first-run wizard.  
+7. Prefer **boot to desktop** (Chromium kiosk needs a graphical session). Setup will also try to set this automatically.
 
----
-
-## Hardware
-
-- Raspberry Pi 4 or 5 recommended (2 GB+ RAM)  
-- Official power supply  
-- MicroSD 32 GB+ (A2 recommended)  
-- HDMI display / TV  
-- Built-in Wi‑Fi (or USB Wi‑Fi that supports AP mode)
-
----
-
-## 1. Flash Raspberry Pi OS
-
-1. Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/).  
-2. Choose **Raspberry Pi OS (64-bit)** with desktop — **Bookworm**.  
-3. In Imager settings: enable SSH, set username/password, optional Wi‑Fi for first-time setup.  
-4. Flash, insert SD, boot, finish first-run wizard.  
-5. Prefer **boot to desktop** (needed for Chromium kiosk).
-
-Update once while the Pi can reach the internet:
+While the Pi still has internet, update packages once:
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
 sudo reboot
 ```
 
+### Optional — SSH from another computer
+
+If you enabled SSH in Imager (same Wi‑Fi as the Pi):
+
+```bash
+ssh yourusername@raspberrypi.local
+# or use the Pi’s IP address from your router
+```
+
+You can also plug a keyboard into the Pi and use the Terminal app on the desktop.
+
 ---
 
-## 2. Get this repo onto the Pi
+## Step 2 — Get the code onto the Pi
 
-**Option A — git clone (needs temporary internet):**
+The Pi still needs **internet** for this step (clone + later `npm install`).
+
+**Option A — git clone (recommended):**
 
 ```bash
 cd ~
@@ -71,29 +94,30 @@ git clone https://github.com/hwproducemarketing-creator/lagivasignage.git
 cd lagivasignage
 ```
 
-**Option B — copy from a USB stick:**
+**Option B — USB stick:** copy the `lagivasignage` folder onto a USB drive on your PC, plug into the Pi, then:
 
 ```bash
-# on the Pi, after mounting the USB
+# after the USB mounts (name varies)
 cp -a /media/$USER/USBNAME/lagivasignage ~/lagivasignage
 cd ~/lagivasignage
 ```
 
 ---
 
-## 3. Run setup
+## Step 3 — Run setup
+
+From the repo folder:
 
 ```bash
 cd ~/lagivasignage
 sudo bash pi/setup.sh
-sudo reboot
 ```
 
-`setup.sh` is idempotent. It will:
+This takes several minutes. It will:
 
 1. Install Node 20, Chromium, NetworkManager, unclutter, curl, x11-xserver-utils  
 2. `npm install` + `npm run build`  
-3. Create `~/hw-signage-data` and root `.env` (`DATA_DIR`, `COOKIE_SECURE=false`, CORS for hotspot IPs)  
+3. Create `~/hw-signage-data` and a root `.env` (`DATA_DIR`, `COOKIE_SECURE=false`, CORS for hotspot IPs)  
 4. Enable systemd units:  
    - `hw-signage` — Express server  
    - `hw-signage-hotspot` — Wi‑Fi AP  
@@ -101,21 +125,119 @@ sudo reboot
 5. **Never-sleep** — disable screen blanking, DPMS, and system suspend  
 6. Add desktop autostart for the kiosk + nosleep  
 
+When it finishes, reboot:
+
+```bash
+sudo reboot
+```
+
+`setup.sh` is safe to run again later (idempotent).
+
 ---
 
-## 4. After reboot — what should happen
+## Step 4 — After reboot (what should happen automatically)
 
-1. **Hotspot** `HW-Signage` appears.  
-2. **Server** listens on `0.0.0.0:4000` (health: `http://127.0.0.1:4000/api/health`).  
-3. **Chromium** opens kiosk to `http://127.0.0.1:4000/player/?v=1.6.0`.  
-4. Phone on hotspot can open admin at `http://10.42.0.1:4000`.  
-5. **Display stays on** — no screensaver / sleep until you power off the Pi.
+1. Desktop logs in.  
+2. Wi‑Fi hotspot **`HW-Signage`** appears (password **`hwproduce`** until you change it).  
+3. Signage server listens on port **4000**.  
+4. Chromium opens fullscreen to the local player:  
+   `http://127.0.0.1:4000/player/?v=1.6.0`  
+5. The HDMI display **stays on** (no screensaver / sleep) until you power off the Pi.
 
-Check status:
+Quick checks on the Pi (keyboard or SSH):
 
 ```bash
 sudo systemctl status hw-signage hw-signage-hotspot hw-signage-kiosk
 curl -s http://127.0.0.1:4000/api/health
+```
+
+You want the three services **active** and health returning JSON (not an error).
+
+---
+
+## Step 5 — Connect your phone and open admin
+
+1. On your phone, open Wi‑Fi settings.  
+2. Join **`HW-Signage`**.  
+3. Password: **`hwproduce`** (or the new password if you already changed it).  
+4. Open Chrome or Safari and go to:  
+   **`http://10.42.0.1:4000`**  
+5. Log in:  
+   - Username: **`admin`**  
+   - Password: **`changeme`** (until you change it)
+
+If that URL fails, try: **`http://192.168.4.1:4000`**.
+
+> The phone does **not** need internet. Admin talks only to the Pi over the hotspot.
+
+---
+
+## Step 6 — Pair the screen and publish first content
+
+### A. Pair the TV (optional but recommended)
+
+The kiosk player shows a **DEVICE CODE** strip (format like `XXXX-XXXX`) when it is waiting / unpaired.
+
+1. On the phone admin, open **Screens**.  
+2. Tap **Add Screen**.  
+3. Enter the code from the TV strip (with or without the dash).  
+4. Give it a name (e.g. `Front counter`) and save.
+
+After pairing, the strip goes away when content is playing. You can still publish without pairing; pairing mainly helps you track the screen in **Screens**.
+
+### B. Publish first content
+
+1. Open **Content** (library).  
+2. Upload an image or MP4 (keep files reasonable — default max upload is **100 MB**).  
+3. Use **Publish** on that item (or build a **Playlist** / **Promotion** and publish from there).  
+4. Wait a few seconds — the Pi player polls and should start showing the new content.
+
+Tips:
+
+- Prefer **Wi‑Fi already on the hotspot** while uploading so the big file lands on the Pi.  
+- After content has played once, the player caches media for offline use if the phone disconnects later.
+
+---
+
+## Step 7 — Change hotspot password & admin password
+
+### Hotspot password / SSID
+
+One-shot (recommended):
+
+```bash
+sudo HW_HOTSPOT_SSID='HW-Signage' HW_HOTSPOT_PASSWORD='YourStrongPass' \
+  bash ~/lagivasignage/pi/start-hotspot.sh
+sudo systemctl restart hw-signage-hotspot
+```
+
+Or edit the defaults in `pi/start-hotspot.sh` (`HW-Signage` / `hwproduce`), then:
+
+```bash
+sudo systemctl restart hw-signage-hotspot
+```
+
+Rejoin the Wi‑Fi on your phone with the new password.
+
+### Admin password
+
+**After first boot**, the password in the database is already seeded. Prefer:
+
+1. Phone → admin → **Settings** → change password there.
+
+To set the **initial** seed password before first start (or if you recreate `.env` carefully):
+
+```bash
+nano ~/lagivasignage/.env
+# set ADMIN_PASSWORD=...
+```
+
+`ADMIN_PASSWORD` in `.env` is only used when the admin user is **first created**. Changing `.env` later does **not** override an existing admin password — use Settings (or recreate the data dir, which wipes content).
+
+Restart after `.env` edits if needed:
+
+```bash
+sudo systemctl restart hw-signage
 ```
 
 ---
@@ -149,55 +271,20 @@ sudo systemctl unmask sleep.target suspend.target hibernate.target hybrid-sleep.
 
 ---
 
-## Change hotspot password / SSID
+## Staff day-to-day
 
-```bash
-sudo nano /home/pi/lagivasignage/pi/start-hotspot.sh
-# or one-shot:
-sudo HW_HOTSPOT_SSID='HW-Signage' HW_HOTSPOT_PASSWORD='YourStrongPass' \
-  bash /home/pi/lagivasignage/pi/start-hotspot.sh
-```
-
-Then:
-
-```bash
-sudo systemctl restart hw-signage-hotspot
-```
-
----
-
-## Change admin password
-
-```bash
-sudo nano ~/lagivasignage/.env   # ADMIN_PASSWORD=...
-# Password is only seeded on first boot — after that use Settings → change password in the admin UI
-sudo systemctl restart hw-signage
-```
+1. Join Wi‑Fi **`HW-Signage`** (your password).  
+2. Open **`http://10.42.0.1:4000`**.  
+3. Log in → upload / publish.  
+4. The Pi TV already runs the local player — no Railway pairing.
 
 ---
 
 ## Offline / no internet
 
-- Server and player run **locally** — no Railway required after setup.  
-- Once media has been published while the phone was connected, the player caches files on the Pi (see player offline mode).  
-- Hotspot does **not** need upstream internet for admin ↔ Pi.
-
----
-
-## Packages (reference)
-
-| Package | Why |
-|---------|-----|
-| `nodejs` 20+ | Signage server |
-| `network-manager` + `nmcli` | Hotspot (`wifi hotspot`) |
-| `chromium` / `chromium-browser` | Kiosk player |
-| `unclutter` | Hide mouse cursor |
-| `x11-xserver-utils` | `xset` to disable DPMS / blanking |
-| `curl` | Health wait in `kiosk.sh` |
-
-### hostapd fallback (if nmcli hotspot fails)
-
-Bookworm usually works with NetworkManager. If your dongle cannot AP via nmcli, install `hostapd` + `dnsmasq`, static IP `192.168.4.1` on `wlan0`, and point staff to `http://192.168.4.1:4000`. Keep `CORS_ORIGIN` including that URL (already in the generated `.env`).
+- After setup, the store can run with **no upstream internet**.  
+- Hotspot is a local LAN between phone ↔ Pi.  
+- Once media was published while the phone was connected, the player can keep showing cached files.
 
 ---
 
@@ -205,11 +292,10 @@ Bookworm usually works with NetworkManager. If your dongle cannot AP via nmcli, 
 
 ```bash
 cd ~/lagivasignage
-git pull   # or copy new files
+git pull
 npm install
 npm run build
 sudo systemctl restart hw-signage
-# Hard-refresh kiosk if needed:
 sudo systemctl restart hw-signage-kiosk
 ```
 
@@ -229,20 +315,38 @@ Data remains in `~/hw-signage-data` until you delete it.
 
 ## Troubleshooting
 
-| Problem | Fix |
+| Problem | What to try |
+|---------|-------------|
+| **No hotspot** | `sudo bash ~/lagivasignage/pi/start-hotspot.sh` · `rfkill unblock wifi` · `sudo systemctl status hw-signage-hotspot` · `sudo journalctl -u hw-signage-hotspot -e` |
+| **Phone can’t open admin** | Confirm SSID `HW-Signage` · try `http://10.42.0.1:4000` and `http://192.168.4.1:4000` · stay on the hotspot (phone must not switch back to LTE-only for that page) |
+| **Login cookie fails** | Ensure `.env` has `COOKIE_SECURE=false` · restart `sudo systemctl restart hw-signage` |
+| **No kiosk / black screen** | Confirm desktop is logged in · `echo $DISPLAY` · run `bash ~/lagivasignage/pi/kiosk.sh` on the desktop · `sudo journalctl -u hw-signage-kiosk -e` · `sudo systemctl restart hw-signage-kiosk` |
+| **Server not up** | `curl -s http://127.0.0.1:4000/api/health` · `sudo journalctl -u hw-signage -e` · confirm `npm run build` created `admin/dist` · `sudo systemctl restart hw-signage` |
+| **`better-sqlite3` build errors** | `sudo apt install -y build-essential python3` then `cd ~/lagivasignage && npm rebuild` |
+| **Screen goes black overnight** | `sudo bash ~/lagivasignage/pi/disable-sleep.sh` then `sudo reboot` |
+
+### hostapd fallback (if nmcli hotspot fails)
+
+Bookworm usually works with NetworkManager. If your dongle cannot AP via nmcli, install `hostapd` + `dnsmasq`, static IP `192.168.4.1` on `wlan0`, and point staff to `http://192.168.4.1:4000`. Keep `CORS_ORIGIN` including that URL (already in the generated `.env`).
+
+---
+
+## Packages (reference)
+
+| Package | Why |
 |---------|-----|
-| Phone can’t open admin | Confirm hotspot SSID; try `http://10.42.0.1:4000` and `http://192.168.4.1:4000` |
-| Login cookie fails | Ensure `.env` has `COOKIE_SECURE=false` |
-| Black kiosk / no browser | `echo $DISPLAY`; run `pi/kiosk.sh` manually on the desktop; check `journalctl -u hw-signage-kiosk` |
-| Server won’t start | `journalctl -u hw-signage -e`; confirm `npm run build` produced `admin/dist` |
-| Hotspot won’t start | `sudo bash pi/start-hotspot.sh`; check Wi‑Fi not blocked: `rfkill unblock wifi` |
-| `better-sqlite3` build errors | `sudo apt install -y build-essential python3` then `npm rebuild` |
+| `nodejs` 20+ | Signage server |
+| `network-manager` + `nmcli` | Hotspot (`wifi hotspot`) |
+| `chromium` / `chromium-browser` | Kiosk player |
+| `unclutter` | Hide mouse cursor |
+| `x11-xserver-utils` | `xset` to disable DPMS / blanking |
+| `curl` | Health wait in `kiosk.sh` |
 
 ---
 
 ## Security notes
 
 - Default hotspot password **`hwproduce`** is for easy store setup only — **change it**.  
-- Change **`ADMIN_PASSWORD`** / use Settings to set a strong password.  
+- Change the admin password in **Settings** (do not leave **`changeme`**).  
 - Hotspot has no internet by default; treat it as a local store LAN.  
 - Physical access to the Pi = access to the database under `DATA_DIR`.
