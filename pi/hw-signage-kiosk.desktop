@@ -2,7 +2,9 @@
 Type=Application
 Name=H&W Signage Kiosk
 Comment=Fullscreen local signage player
-Exec=__INSTALL_DIR__/pi/kiosk.sh
+Exec=/bin/bash __INSTALL_DIR__/pi/kiosk.sh
 X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
 NoDisplay=false
 Terminal=false
+StartupNotify=false

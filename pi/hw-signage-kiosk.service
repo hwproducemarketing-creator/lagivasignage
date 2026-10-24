@@ -1,8 +1,9 @@
 [Unit]
 Description=H&W Signage Chromium kiosk (local player)
-After=graphical.target hw-signage.service
-Wants=hw-signage.service
-Requires=graphical.target
+# Start after desktop + signage server; do not hard-Require graphical.target
+# (Requires=graphical.target can leave kiosk dead if the target flaps after git pull)
+After=graphical.target hw-signage.service network-online.target
+Wants=hw-signage.service graphical.target
 
 [Service]
 Type=simple
@@ -10,10 +11,13 @@ User=__SIGNAGE_USER__
 Group=__SIGNAGE_USER__
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/__SIGNAGE_USER__/.Xauthority
+Environment=XDG_RUNTIME_DIR=/run/user/%U
 WorkingDirectory=__INSTALL_DIR__
-ExecStart=__INSTALL_DIR__/pi/kiosk.sh
+ExecStart=/bin/bash __INSTALL_DIR__/pi/kiosk.sh
 Restart=always
-RestartSec=5
+RestartSec=8
+# Give X/Wayland time after boot before first attempt
+ExecStartPre=/bin/sleep 3
 
 [Install]
 WantedBy=graphical.target

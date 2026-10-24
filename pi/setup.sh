@@ -51,7 +51,8 @@ apt-get install -y \
   unclutter \
   fonts-liberation \
   xdg-utils \
-  x11-xserver-utils
+  x11-xserver-utils \
+  ffmpeg
 
 # Chromium package name differs; try chromium-browser if needed
 apt-get install -y chromium-browser 2>/dev/null || true
@@ -95,6 +96,8 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=changeme
 CORS_ORIGIN=http://127.0.0.1:4000,http://localhost:4000,http://10.42.0.1:4000,http://192.168.4.1:4000
 MAX_UPLOAD_MB=100
+# Convert uploads to H.264 AAC MP4 so Pi Chromium can play them (VLC can play HEVC; Chromium often cannot)
+TRANSCODE_VIDEO=true
 EOF
   chown "$SIGNAGE_USER:$SIGNAGE_USER" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -104,6 +107,7 @@ else
   # Ensure Pi-critical keys exist
   grep -q '^COOKIE_SECURE=' "$ENV_FILE" || echo 'COOKIE_SECURE=false' >> "$ENV_FILE"
   grep -q '^DATA_DIR=' "$ENV_FILE" || echo "DATA_DIR=$DATA_DIR" >> "$ENV_FILE"
+  grep -q '^TRANSCODE_VIDEO=' "$ENV_FILE" || echo 'TRANSCODE_VIDEO=true' >> "$ENV_FILE"
 fi
 
 echo "[4/9] npm install + build (as $SIGNAGE_USER)…"
@@ -113,7 +117,8 @@ echo "[5/9] Scripts executable…"
 chmod +x "$INSTALL_DIR/pi/setup.sh" \
   "$INSTALL_DIR/pi/start-hotspot.sh" \
   "$INSTALL_DIR/pi/kiosk.sh" \
-  "$INSTALL_DIR/pi/disable-sleep.sh"
+  "$INSTALL_DIR/pi/disable-sleep.sh" \
+  "$INSTALL_DIR/pi/transcode-uploads.sh"
 
 render_unit() {
   local src="$1"
@@ -132,6 +137,8 @@ systemctl daemon-reload
 systemctl enable hw-signage.service hw-signage-hotspot.service hw-signage-kiosk.service
 systemctl restart hw-signage-hotspot.service || true
 systemctl restart hw-signage.service
+# Re-bind kiosk unit after git pull (paths / ExecStart may have changed)
+systemctl restart hw-signage-kiosk.service || true
 
 echo "[7/9] Never-sleep (screen blank / DPMS / suspend)…"
 bash "$INSTALL_DIR/pi/disable-sleep.sh"
@@ -165,8 +172,9 @@ echo "Hotspot SSID     : HW-Signage"
 echo "Hotspot password : hwproduce   ← CHANGE THIS (HW_HOTSPOT_PASSWORD or edit pi/start-hotspot.sh)"
 echo "Admin (phone)    : http://10.42.0.1:4000   (login admin / see .env ADMIN_PASSWORD)"
 echo "                   http://192.168.4.1:4000  (if using hostapd fallback)"
-echo "Player (kiosk)   : http://127.0.0.1:4000/player/?v=1.6.2"
+echo "Player (kiosk)   : http://127.0.0.1:4000/player/?v=1.6.3"
 echo "Kiosk            : fullscreen Chromium + mouse cursor hidden (unclutter)"
+echo "Transcode        : TRANSCODE_VIDEO=true (ffmpeg → H.264 for Chromium)"
 echo "Data             : $DATA_DIR"
 echo "Display          : never-sleep enabled (blanking/DPMS/suspend off) — reboot to apply fully"
 echo

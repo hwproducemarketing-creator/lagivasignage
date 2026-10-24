@@ -41,7 +41,7 @@ Run the whole signage system **on a Raspberry Pi** at the store:
 | Hotspot password | `hwproduce` | **Change this** — nearby phones can join |
 | Admin URL (phone) | `http://10.42.0.1:4000` | NetworkManager hotspot gateway |
 | Alt admin URL | `http://192.168.4.1:4000` | hostapd-style fallback |
-| Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.2` | Fullscreen kiosk, no mouse |
+| Player (on Pi) | `http://127.0.0.1:4000/player/?v=1.6.3` | Fullscreen kiosk, no mouse |
 | Admin login | `admin` / `changeme` | From `.env` (`ADMIN_USERNAME` / `ADMIN_PASSWORD`) |
 | Data folder | `/home/<your-user>/hw-signage-data` | SQLite + uploads |
 
@@ -142,7 +142,7 @@ sudo reboot
 2. Wi‑Fi hotspot **`HW-Signage`** appears (password **`hwproduce`** until you change it).  
 3. Signage server listens on port **4000**.  
 4. Chromium opens **true fullscreen kiosk** to the local player:  
-   `http://127.0.0.1:4000/player/?v=1.6.2`  
+   `http://127.0.0.1:4000/player/?v=1.6.3`  
 5. The **mouse cursor is hidden** (`unclutter` / `unclutter-xfixes`).  
 6. The HDMI display **stays on** (no screensaver / sleep) until you power off the Pi.
 
@@ -198,7 +198,8 @@ Tips:
 
 - Prefer **Wi‑Fi already on the hotspot** while uploading so the big file lands on the Pi.  
 - After content has played once, the player caches media for offline use if the phone disconnects later.  
-- **Videos for Pi Chromium:** export as **H.264 (AVC) + AAC inside an `.mp4`** (Baseline or Main profile). HEVC/H.265, ProRes, and many WebM/VP9 files often download fine but show a **blank screen** because Pi Chromium cannot decode them.
+- **Videos for Pi Chromium:** export as **H.264 (AVC) + AAC inside an `.mp4`** (Baseline or Main profile). **VLC can play HEVC/H.265 that Chromium cannot** — if VLC works but the kiosk is blank, re-encode (or let the Pi transcode on upload).  
+- With `TRANSCODE_VIDEO=true` (default in Pi `.env`) and `ffmpeg` installed, new video uploads are converted to H.264 automatically.
 
 ---
 
@@ -242,6 +243,38 @@ Restart after `.env` edits if needed:
 ```bash
 sudo systemctl restart hw-signage
 ```
+
+---
+
+## Video codecs (VLC vs Chromium)
+
+| Player | Typical codecs |
+|--------|----------------|
+| **VLC on Pi** | Plays H.264, **HEVC/H.265**, many phone exports |
+| **Chromium on Pi** | Reliably plays **H.264 + AAC in MP4** only |
+
+So a file can download and open in VLC, yet show **zero video dimensions** / blank in the kiosk. Fix:
+
+1. **Automatic (preferred):** `setup.sh` installs `ffmpeg` and sets `TRANSCODE_VIDEO=true`. New uploads are converted on the server.  
+2. **Existing files already on the Pi:**
+
+```bash
+sudo apt install -y ffmpeg
+bash ~/lagivasignage/pi/transcode-uploads.sh
+sudo systemctl restart hw-signage hw-signage-kiosk
+```
+
+3. **One file manually:**
+
+```bash
+ffmpeg -y -i input.mp4 \
+  -c:v libx264 -pix_fmt yuv420p -profile:v main -level 4.0 \
+  -preset veryfast -crf 23 \
+  -c:a aac -b:a 128k -movflags +faststart \
+  output-h264.mp4
+```
+
+Then upload/publish `output-h264.mp4` from admin (or replace the file under `~/hw-signage-data/uploads/`).
 
 ---
 
@@ -349,7 +382,8 @@ Data remains in `~/hw-signage-data` until you delete it.
 | **Login cookie fails** | Ensure `.env` has `COOKIE_SECURE=false` · restart `sudo systemctl restart hw-signage` |
 | **No kiosk / black screen** | Confirm desktop is logged in · `echo $DISPLAY` · run `bash ~/lagivasignage/pi/kiosk.sh` on the desktop · `sudo journalctl -u hw-signage-kiosk -e` · `sudo systemctl restart hw-signage-kiosk` |
 | **Mouse cursor visible** | `sudo apt install -y unclutter` · `sudo systemctl restart hw-signage-kiosk` · confirm kiosk uses `--kiosk --start-fullscreen` |
-| **Video blank / black after publish** | Re-encode as **H.264 AAC MP4** · hard-refresh kiosk: `sudo systemctl restart hw-signage-kiosk` · confirm player URL has `?v=1.6.2` · photos OK + video blank usually means codec, not Wi‑Fi |
+| **Video blank / black after publish** | VLC≠Chromium codecs — re-encode **H.264 AAC MP4** or run `bash ~/lagivasignage/pi/transcode-uploads.sh` · `sudo systemctl restart hw-signage hw-signage-kiosk` · player should show a clear message (not infinite console spam) on `?v=1.6.3` |
+| **Kiosk not auto-opening** | `sudo bash ~/lagivasignage/pi/setup.sh` (reinstalls units) · `sudo systemctl restart hw-signage-kiosk` · `journalctl -u hw-signage-kiosk -e` · confirm desktop is logged in |
 | **Server not up** | `curl -s http://127.0.0.1:4000/api/health` · `sudo journalctl -u hw-signage -e` · confirm `npm run build` created `admin/dist` · `sudo systemctl restart hw-signage` |
 | **`better-sqlite3` build errors** | `sudo apt install -y build-essential python3` then `cd ~/lagivasignage && npm rebuild` |
 | **Screen goes black overnight** | `sudo bash ~/lagivasignage/pi/disable-sleep.sh` then `sudo reboot` |

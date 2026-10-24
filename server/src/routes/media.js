@@ -11,6 +11,11 @@ import {
   validateUpload,
 } from '../services/files.js';
 import { setDefaultMedia } from '../services/signage.js';
+import {
+  shouldTranscodeVideo,
+  transcodeVideoToH264,
+  isLikelyH264,
+} from '../services/transcode.js';
 
 const router = Router();
 
@@ -91,32 +96,69 @@ router.post('/upload', requireAuth, (req, res) => {
     const width = req.body.width ? Number(req.body.width) : null;
     const height = req.body.height ? Number(req.body.height) : null;
 
-    const result = db
-      .prepare(
-        `INSERT INTO media (filename, original_name, mime_type, type, size, width, height, path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        req.file.filename,
-        req.file.originalname,
-        req.file.mimetype,
-        check.type,
-        req.file.size,
-        width,
-        height,
-        req.file.filename
+    (async () => {
+      let filename = req.file.filename;
+      let mimeType = req.file.mimetype;
+      let size = req.file.size;
+      let transcoded = false;
+
+      // Pi Chromium needs H.264 — VLC plays HEVC but Chromium often shows a blank screen
+      if (check.type === 'video' && shouldTranscodeVideo()) {
+        try {
+          const already = await isLikelyH264(uploadsDir, filename);
+          if (!already) {
+            const out = await transcodeVideoToH264(uploadsDir, filename);
+            filename = out.filename;
+            mimeType = out.mimeType;
+            size = out.size;
+            transcoded = true;
+          }
+        } catch (err) {
+          console.warn('[hw-signage] video transcode skipped:', err.message || err);
+          // Keep original file so upload still succeeds; player will show codec message if needed
+        }
+      }
+
+      const result = db
+        .prepare(
+          `INSERT INTO media (filename, original_name, mime_type, type, size, width, height, path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          filename,
+          req.file.originalname,
+          mimeType,
+          check.type,
+          size,
+          width,
+          height,
+          filename
+        );
+
+      const media = db.prepare('SELECT * FROM media WHERE id = ?').get(result.lastInsertRowid);
+      logActivity(
+        'upload',
+        `New ${check.type} uploaded: ${media.original_name}${transcoded ? ' (transcoded H.264)' : ''}`,
+        { mediaId: media.id }
       );
 
-    const media = db.prepare('SELECT * FROM media WHERE id = ?').get(result.lastInsertRowid);
-    logActivity('upload', `New ${check.type} uploaded: ${media.original_name}`, {
-      mediaId: media.id,
-    });
-
-    const state = db.prepare('SELECT media_id FROM signage_state WHERE id = 1').get();
-    res.status(201).json({
-      ok: true,
-      message: 'Upload successful',
-      media: mediaRowToDto(media, state?.media_id),
+      const state = db.prepare('SELECT media_id FROM signage_state WHERE id = 1').get();
+      res.status(201).json({
+        ok: true,
+        message: transcoded ? 'Upload successful (converted to H.264 for Chromium)' : 'Upload successful',
+        transcoded,
+        media: mediaRowToDto(media, state?.media_id),
+      });
+    })().catch((err) => {
+      console.error('[hw-signage] upload handler failed', err);
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {
+        /* ignore */
+      }
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message || 'Upload failed' });
+      }
     });
   });
 });

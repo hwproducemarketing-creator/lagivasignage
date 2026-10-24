@@ -1,10 +1,12 @@
 (() => {
-  const APP_VERSION = '1.6.2-web';
+  const APP_VERSION = '1.6.3-web';
   const POLL_MS = 10_000;
   const HEARTBEAT_MS = 30_000;
   const PAIRING_MS = 3_000;
   const WAKE_LOCK_MS = 30_000;
-  const CACHE_NAME = 'hw-signage-media-v5';
+  const CACHE_NAME = 'hw-signage-media-v6';
+  const VIDEO_FAIL_MSG =
+    "This video can't play in Chromium. Re-encode as H.264 AAC MP4.";
   const DEFAULT_IMAGE_SEC = 10;
   const DEFAULT_VIDEO_SEC = 30;
   /** One-at-a-time downloads so 15 Mbps Wi‑Fi isn't contested */
@@ -148,6 +150,8 @@
   let wakeLockTimer = null;
   /** Bumps when a new video source is applied so late play() results are ignored */
   let videoPlayGeneration = 0;
+  /** URLs that already failed decode — do not spam retries / console */
+  const failedVideoUrls = new Set();
   /** absoluteUrl → { objectUrl, type, blob } — in-memory for current session */
   const mediaMemory = new Map();
   /** absoluteUrl → timestamp when retry is allowed */
@@ -562,44 +566,69 @@
     return null;
   }
 
-  function videoCodecHint() {
+  /** Pi / ARM Chromium: prefer same-origin /uploads over blob: MP4s */
+  function preferDirectUploadsPlayback() {
     try {
-      const probe = document.createElement('video');
-      const mp4 =
-        probe.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"') ||
-        probe.canPlayType('video/mp4; codecs="avc1.4D401E, mp4a.40.2"') ||
-        probe.canPlayType('video/mp4');
-      if (!mp4) {
-        return 'This browser may not play MP4/H.264 — encode as H.264 AAC MP4.';
-      }
+      const ua = navigator.userAgent || '';
+      const plat = navigator.platform || '';
+      const hay = `${ua} ${plat}`;
+      return /Raspberry|aarch64|armv7l|armv8|arm64|Linux arm/i.test(hay);
+    } catch {
+      return false;
+    }
+  }
+
+  function markVideoFailed(...urls) {
+    for (const u of urls) {
+      if (u) failedVideoUrls.add(String(u));
+    }
+  }
+
+  function isVideoMarkedFailed(url) {
+    return !!(url && failedVideoUrls.has(String(url)));
+  }
+
+  function showVideoCodecFailure() {
+    showingMedia = false;
+    try {
+      videoView.removeAttribute('src');
+      videoView.load();
     } catch {
       /* ignore */
     }
-    return 'Use H.264 (Baseline/Main) + AAC in an MP4 for Raspberry Pi Chromium.';
+    setVisible(videoView, false);
+    showWaiting(VIDEO_FAIL_MSG, { force: true });
+    updateChrome();
   }
 
-  function waitForVideoReady(video, timeoutMs = 20_000) {
+  function waitForVideoReady(video, timeoutMs = 12_000) {
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (fn, arg) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        video.removeEventListener('loadeddata', onReady);
-        video.removeEventListener('canplay', onReady);
+        video.removeEventListener('loadeddata', onMaybeReady);
+        video.removeEventListener('canplay', onMaybeReady);
         video.removeEventListener('error', onError);
         fn(arg);
       };
-      const onReady = () => finish(resolve);
+      const onMaybeReady = () => {
+        // Unsupported codecs (e.g. HEVC) can fire loadeddata with videoWidth===0 — not success
+        if (video.videoWidth > 0 && video.readyState >= 2) finish(resolve);
+      };
       const onError = () => {
         const code = video.error ? video.error.code : '?';
         finish(reject, new Error(`video element error code=${code}`));
       };
-      const timer = setTimeout(() => finish(reject, new Error('video load timeout')), timeoutMs);
-      video.addEventListener('loadeddata', onReady);
-      video.addEventListener('canplay', onReady);
+      const timer = setTimeout(() => {
+        if (video.videoWidth > 0 && video.readyState >= 2) finish(resolve);
+        else finish(reject, new Error('video load timeout / zero dimensions'));
+      }, timeoutMs);
+      video.addEventListener('loadeddata', onMaybeReady);
+      video.addEventListener('canplay', onMaybeReady);
       video.addEventListener('error', onError);
-      if (video.readyState >= 2 && video.videoWidth > 0) finish(resolve);
+      onMaybeReady();
     });
   }
 
@@ -642,13 +671,30 @@
   }
 
   /**
-   * Play video from blob: (preferred) or same-origin /uploads/ fallback.
-   * Pi Chromium often fails on blob: video even when the file downloaded fine.
+   * Play video. On Raspberry Pi / ARM, try same-origin /uploads FIRST (blob MP4s often fail).
+   * At most one blob→uploads fallback; then stop and show a clear on-screen message (no spam).
    */
-  async function playVideoSource(url, { loop = true, sourceUrl = null, allowFallback = true } = {}) {
+  async function playVideoSource(url, { loop = true, sourceUrl = null, attempt = 0 } = {}) {
     const gen = ++videoPlayGeneration;
+    const absSource = sourceUrl && isSameOriginUploadsUrl(sourceUrl) ? sourceUrl : null;
+    const failKey = absSource || url;
+
+    if (isVideoMarkedFailed(url) || isVideoMarkedFailed(absSource) || isVideoMarkedFailed(failKey)) {
+      if (gen === videoPlayGeneration) showVideoCodecFailure();
+      return false;
+    }
+
+    // Cap attempts: 0 = first try, 1 = one fallback. Never loop.
+    if (attempt > 1) {
+      markVideoFailed(url, absSource, failKey);
+      noteError(new Error(VIDEO_FAIL_MSG), 'video.unsupported');
+      if (gen === videoPlayGeneration) showVideoCodecFailure();
+      return false;
+    }
+
     setVisible(imageView, false);
     setVisible(videoView, true);
+    videoView.classList.add('is-playing');
     stopBgCanvas();
 
     videoView.muted = true;
@@ -692,7 +738,6 @@
       if (isRegistered()) setVisible(waitingPanel, false);
       updateChrome();
 
-      // Background blur is decorative only — never block foreground playback
       try {
         syncBackground(url, 'video');
         if (useCanvasBg) startBgCanvasFromVideo(videoView);
@@ -703,35 +748,30 @@
       }
       return true;
     } catch (err) {
-      noteError(err, 'playVideoSource');
-      if (allowFallback) {
-        const fallback = sourceUrl || findAbsoluteUrlForObjectUrl(url);
-        if (fallback && isSameOriginUploadsUrl(fallback) && fallback !== url) {
-          noteError(new Error(`blob video failed; falling back to ${fallback}`), 'video.fallback');
-          return playVideoSource(fallback, {
-            loop,
-            sourceUrl: null,
-            allowFallback: false,
-          });
-        }
+      // Log once per attempt only
+      noteError(err, attempt === 0 ? 'playVideoSource' : 'playVideoSource.fallback');
+
+      const fallback = absSource && absSource !== url ? absSource : null;
+      if (attempt === 0 && fallback) {
+        return playVideoSource(fallback, {
+          loop,
+          sourceUrl: null,
+          attempt: 1,
+        });
       }
+
+      markVideoFailed(url, absSource, failKey);
       if (gen === videoPlayGeneration) {
-        showingMedia = false;
-        try {
-          videoView.removeAttribute('src');
-          videoView.load();
-        } catch {
-          /* ignore */
-        }
-        showWaiting(`Video won’t play. ${videoCodecHint()}`, { force: true });
+        videoView.classList.remove('is-playing');
+        showVideoCodecFailure();
       }
       return false;
     }
   }
 
   function displayMedia(url, type, options = {}) {
-    // Prefer fully-downloaded blob: URLs; allow same-origin /uploads/ as Pi Chromium fallback
-    if (!isPlayableMediaUrl(url)) {
+    // Prefer fully-downloaded blob: URLs; allow same-origin /uploads/ (required on Pi Chromium)
+    if (!isPlayableMediaUrl(url) && !(options.sourceUrl && isSameOriginUploadsUrl(options.sourceUrl))) {
       noteError(new Error('refused non-local playback URL'), 'displayMedia');
       return;
     }
@@ -740,24 +780,42 @@
     updateCodeRail();
     isPreloading = false;
 
-    if (cachedObjectUrl && cachedObjectUrl !== url) {
+    if (cachedObjectUrl && cachedObjectUrl !== url && String(cachedObjectUrl).startsWith('blob:')) {
       revokeIfUnused(cachedObjectUrl);
     }
-    cachedObjectUrl = url;
     cachedType = type;
     store.set('cachedType', type);
 
     if (type === 'video') {
-      // Optimistic hide of waiting only after frames decode (playVideoSource)
       showingMedia = false;
-      void playVideoSource(url, { loop, sourceUrl, allowFallback: true });
+      const direct =
+        sourceUrl && isSameOriginUploadsUrl(sourceUrl) ? sourceUrl : isSameOriginUploadsUrl(url) ? url : null;
+
+      if (isVideoMarkedFailed(url) || isVideoMarkedFailed(direct)) {
+        showVideoCodecFailure();
+        return;
+      }
+
+      // Raspberry Pi / ARM: /uploads first (VLC can play HEVC; Chromium often cannot — and hates blob MP4s)
+      if (preferDirectUploadsPlayback() && direct) {
+        cachedObjectUrl = direct;
+        void playVideoSource(direct, { loop, sourceUrl: direct, attempt: 0 });
+      } else if (direct && String(url).startsWith('blob:')) {
+        cachedObjectUrl = url;
+        void playVideoSource(url, { loop, sourceUrl: direct, attempt: 0 });
+      } else {
+        cachedObjectUrl = url;
+        void playVideoSource(url, { loop, sourceUrl: direct, attempt: 0 });
+      }
     } else {
       videoPlayGeneration += 1;
       stopVideo();
+      videoView.classList.remove('is-playing');
       setVisible(videoView, false);
       setVisible(imageView, true);
       syncBackground(url, 'image');
       imageView.src = url;
+      cachedObjectUrl = url;
       imageView.onload = () => {
         showingMedia = true;
         if (isRegistered()) setVisible(waitingPanel, false);
@@ -1121,7 +1179,7 @@
     }, ms);
   }
 
-  /** Play only from local blob cache — never fetch during rotation. */
+  /** Play from local blob cache; on Pi ARM video prefers same-origin /uploads. */
   async function showPlaylistItem(index) {
     if (!playlistItems.length) return;
     const n = playlistItems.length;
@@ -1129,20 +1187,50 @@
     let idx = ((index % n) + n) % n;
 
     let media = null;
+    let item = null;
     for (let tried = 0; tried < n; tried += 1) {
       const candidate = playlistItems[idx];
+      const abs = absoluteMediaUrl(candidate.url);
+      if (candidate.type === 'video' && isVideoMarkedFailed(abs)) {
+        if (!isMulti) {
+          showVideoCodecFailure();
+          return;
+        }
+        idx = (idx + 1) % n;
+        continue;
+      }
+
       media = await resolveItemMedia(candidate, { allowNetwork: false });
-      if (media?.objectUrl?.startsWith('blob:')) break;
+      if (media?.objectUrl?.startsWith('blob:')) {
+        item = candidate;
+        break;
+      }
+
+      // Pi: play video directly from /uploads when server is local (blob optional)
+      if (
+        candidate.type === 'video' &&
+        preferDirectUploadsPlayback() &&
+        isSameOriginUploadsUrl(abs) &&
+        isOnline()
+      ) {
+        item = candidate;
+        media = { url: abs, objectUrl: abs, type: 'video', source: 'uploads' };
+        break;
+      }
+
       media = null;
+      item = null;
       if (!isMulti) break;
       idx = (idx + 1) % n;
     }
 
-    if (!media) {
+    if (!media || !item) {
       updateChrome();
       if (isMulti) {
         stopSlideTimer();
         slideTimer = setTimeout(() => showPlaylistItem(playlistIndex + 1), 5_000);
+      } else if (playlistItems[0]?.type === 'video') {
+        showVideoCodecFailure();
       }
       return;
     }
@@ -1150,7 +1238,6 @@
     playlistIndex = idx;
     store.set('playlistIndex', String(playlistIndex));
     store.set('playlistItemStartedAt', String(Date.now()));
-    const item = playlistItems[playlistIndex];
 
     displayMedia(media.objectUrl, media.type || item.type, {
       loop: !isMulti,
@@ -1177,14 +1264,26 @@
 
   function activatePlaylist(items, version, startIndex) {
     const ready = itemsReadyFromMap(items, mediaMemory);
-    if (!ready.length) return false;
+    const piDirectVideo =
+      preferDirectUploadsPlayback() &&
+      items.some(
+        (it) => it.type === 'video' && isSameOriginUploadsUrl(absoluteMediaUrl(it.url))
+      );
+    if (!ready.length && !piDirectVideo) return false;
+
+    // New publish → allow retry of previously failed codecs (may have been re-encoded)
+    if (Number(version) !== Number(contentVersion)) {
+      failedVideoUrls.clear();
+    }
 
     // Prefer full published list when everything cached; otherwise only ready blobs
-    playlistItems = ready.length === items.length ? items : ready;
+    // On Pi, keep full list so videos can play from /uploads even mid-download
+    playlistItems =
+      ready.length === items.length || (piDirectVideo && !ready.length) ? items : ready.length ? ready : items;
     playMode = playlistItems.length > 1 ? 'playlist' : 'single';
     let idx = startIndex;
     if (idx < 0 || idx >= playlistItems.length) idx = 0;
-    if (ready.length !== items.length) {
+    if (ready.length && ready.length !== items.length) {
       const want = absoluteMediaUrl(items[Math.min(startIndex, items.length - 1)].url);
       const found = playlistItems.findIndex((it) => absoluteMediaUrl(it.url) === want);
       idx = found >= 0 ? found : 0;
